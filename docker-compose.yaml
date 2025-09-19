@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  web:
+    build: ./backend
+    container_name: affiliate_ai_web
+    command: sh -c "sleep 10 && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./backend:/app
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      POSTGRES_USER: affiliate_user
+      POSTGRES_PASSWORD: affiliate_pass
+      POSTGRES_DB: affiliate_db
+      AFF_SECRET: "${AFF_SECRET}"   # lấy từ file .env (khuyến nghị) hoặc bạn có thể đặt thẳng chuỗi bí mật
+
+  db:
+    image: postgres:15
+    container_name: affiliate_ai_db
+    restart: always
+    environment:
+      POSTGRES_USER: affiliate_user
+      POSTGRES_PASSWORD: affiliate_pass
+      POSTGRES_DB: affiliate_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:
+
