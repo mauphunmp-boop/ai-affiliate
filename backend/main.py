@@ -22,6 +22,9 @@ from accesstrade_service import (
     fetch_campaign_detail, fetch_commission_policies  # NEW
 )
 
+# FastAPI application instance
+app = FastAPI()
+
 # ---------------- Logging ----------------
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("affiliate_api")
@@ -31,134 +34,7 @@ for noisy in ("httpx", "httpcore", "uvicorn", "uvicorn.error", "uvicorn.access")
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
 # ---------------- DB init ----------------
-Base.metadata.create_all(bind=engine)
-
-# --- Default ingest policy on startup ---
-# Mặc định:
-# - only_with_commission=false  (Excel mới áp dụng)
-# - check_urls=false            (tắt check link khi ingest qua API/Excel)
-# - linkcheck_cursor=0          (scheduler quét luân phiên 10 "lát cắt")
-try:
-    _db = SessionLocal()
-    existing = crud.get_api_config(_db, "ingest_policy")
-    if not existing:
-        crud.create_api_config(_db, schemas.APIConfigCreate(
-            name="ingest_policy", base_url="-", api_key="-",
-            model="only_with_commission=false;check_urls=false;linkcheck_cursor=0"
-        ))
-    else:
-        model_str = (existing.model or "").lower()
-        if "check_urls=" not in model_str or "linkcheck_cursor=" not in model_str:
-            # Bổ sung phần còn thiếu, không phá giá trị cũ
-            parts = [model_str] if model_str else []
-            if "check_urls=" not in model_str:
-                parts.append("check_urls=false")
-            if "linkcheck_cursor=" not in model_str:
-                parts.append("linkcheck_cursor=0")
-            updated = ";".join([p for p in parts if p])
-            crud.upsert_api_config_by_name(_db, schemas.APIConfigCreate(
-                name="ingest_policy", base_url=existing.base_url or "-",
-                api_key=existing.api_key or "-", model=updated
-            ))
-finally:
-    try:
-        _db.close()
-    except Exception:
-        pass
-
-# --- DB MIGRATION V2 (thêm cột & bảng phục vụ hybrid 3 lớp) ---
-try:
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE product_offers ADD COLUMN IF NOT EXISTS approval_status VARCHAR"))
-        conn.execute(text("ALTER TABLE product_offers ADD COLUMN IF NOT EXISTS eligible_commission BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE product_offers ADD COLUMN IF NOT EXISTS source_type VARCHAR"))
-        conn.execute(text("ALTER TABLE product_offers ADD COLUMN IF NOT EXISTS affiliate_link_available BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE product_offers ADD COLUMN IF NOT EXISTS product_id VARCHAR"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_offers_approval_status ON product_offers (approval_status)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_offers_campaign_id ON product_offers (campaign_id)"))
-        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_product_offers_product_id ON product_offers (product_id)"))
-        # NEW: unique index chống trùng (source, source_id)
-        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_product_offers_source_source_id ON product_offers (source, source_id)"))
-except Exception as e:
-    logger.error("DB migration V2 failed: %s", e)
-
-# ---------------- FastAPI App (UI đẹp & có nhóm) ----------------
-app = FastAPI(
-    title="AI Affiliate Advisor API",
-    version="1.0.0",
-    description=(
-        "📘 **Tài liệu API hệ thống Affiliate**\n\n"
-        "Quản lý link tiếp thị liên kết, ingest sản phẩm, kiểm tra alive/dead, "
-        "và sử dụng AI để tư vấn sản phẩm.\n\n"
-        "Các endpoint được nhóm theo **tags** để dễ sử dụng."
-    ),
-    openapi_tags=[
-    {"name": "System 🛠️", "description": "Kiểm tra trạng thái hệ thống & sức khỏe dịch vụ."},
-    {"name": "Links 🔗", "description": "CRUD link tiếp thị (hiển thị, thêm, sửa, xoá)."},
-    {"name": "API Configs ⚙️", "description": "Quản lý cấu hình AI/API (tạo, danh sách, cập nhật, xoá)."},
-    {"name": "Affiliate 🎯", "description": "Mẫu deeplink, chuyển link gốc → deeplink & shortlink, redirect an toàn."},
-    {"name": "Offers 🛒", "description": "Quản lý sản phẩm (ingest từ Accesstrade, danh sách, cleanup link chết, kiểm tra 1 sản phẩm)."},
-    {"name": "AI 🤖", "description": "Gợi ý/Trả lời của AI dựa trên các sản phẩm đã ingest trong DB."},
-    {"name": "Campaigns 📢", "description": "Cảnh báo đăng ký chiến dịch & tình trạng user."}
-    ],
-    swagger_ui_parameters={
-        "docExpansion": "list",               # Mở theo nhóm, gọn gàng
-        "defaultModelsExpandDepth": -1,       # Ẩn schema mặc định cho đỡ rối
-        "displayRequestDuration": True,       # Hiện thời gian thực thi
-        "deepLinking": True,                  # Cho phép deep link tới từng API
-        "filter": True                        # Ô lọc endpoint nhanh
-    }
-)
-
-# --- Scheduler để cleanup + ingest datafeeds hằng ngày ---
-from fastapi_utils.tasks import repeat_every
-
-@app.on_event("startup")
-@repeat_every(seconds=86400, wait_first=True)  # chạy mỗi ngày, chờ 1 ngày mới chạy lần đầu
-async def scheduled_ingest_accesstrade() -> None:
-    db = SessionLocal()
-    try:
-        # --- Cleanup link chết: chuyển sang xoay vòng 10%/lượt ---
-        try:
-            # mỗi ngày kiểm 1 "lát cắt": id % 10 = cursor; xong tự tăng cursor (mod 10)
-            res = await scheduler_linkcheck_rotate(delete_dead=True, db=db)
-            logger.info("[ROTATE] daily linkcheck: %s", res)
-        except Exception as e:
-            logger.error("[ROTATE] daily linkcheck failed: %s", e)
-
-        # --- Lấy campaign đang chạy ---
-        from accesstrade_service import fetch_active_campaigns
-        active_campaigns = await fetch_active_campaigns(db)
-        logger.info("Fetched %d active campaigns", len(active_campaigns))
-
-        # Tạo map merchant -> campaign_id từ danh sách active để suy ngược
-        merchant_campaign_map = {v: k for k, v in active_campaigns.items()}
-
-        # --- Ingest khuyến mãi & top products theo kiến trúc mới ---
-        try:
-            await ingest_v2_promotions(IngestV2PromotionsReq(merchant=None, create_offers=True), db)
-            approved_merchants = list_approved_merchants_api(db)  # danh sách merchant đã APPROVED & running
-            for m in approved_merchants:
-                await ingest_v2_top_products(
-                    IngestV2TopProductsReq(merchant=m, limit_per_page=100, max_pages=1, throttle_ms=0), db
-                )
-        except Exception as e:
-            logger.error("Scheduled v2 ingest (promotions/top-products) failed: %s", e)
-
-        # --- Ingest datafeeds full (tùy chọn, chạy sau cùng) ---
-        try:
-            res = await ingest_accesstrade_datafeeds_all(
-                IngestAllDatafeedsReq(limit_per_page=100, max_pages=2000, throttle_ms=200),
-                db
-            )
-            logger.info("Scheduled full ingest done: %s", res)
-        except Exception as e:
-            logger.error("Scheduled full ingest failed: %s", e)
-
-    except Exception as e:
-        logger.error("Scheduled ingest failed: %s", e)
-    finally:
-        db.close()
+# (ingest v2 all-approved endpoint removed; no scheduling code injected here)
 
 # ---------------- CORS ----------------
 origins: List[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -1655,110 +1531,7 @@ async def ingest_v2_top_products(
 # ================================
 # NEW: One-shot ingest ALL sources for APPROVED merchants
 # ================================
-class IngestAllApprovedReq(BaseModel):
-    # Bật/tắt từng nguồn
-    include_promotions: bool = True
-    include_top_products: bool = True
-    include_datafeeds: bool = True
-
-    # Tham số cho top_products
-    top_date_from: str | None = None
-    top_date_to: str | None = None
-    top_limit_per_page: int = 100
-    top_max_pages: int = 2
-
-    # Tham số cho datafeeds
-    datafeeds_limit_per_page: int = 100
-    datafeeds_max_pages: int = 5
-
-    # Nghỉ giữa các lần gọi (ms) để tôn trọng rate-limit
-    throttle_ms: int = 200
-
-
-@app.post(
-    "/ingest/v2/offers/all-approved",
-    tags=["Offers 🛒"],
-    summary="Ingest tất cả sản phẩm từ approved merchants (promotions + top_products + datafeeds)",
-    description=(
-        "Một lệnh duy nhất:\n"
-        "1) Promotions (offers_informations) theo từng merchant đã APPROVED (tạo offer tối thiểu nếu có link sống)\n"
-        "2) Top products theo từng merchant đã APPROVED (tự phân trang theo limit/max_pages)\n"
-        "3) Datafeeds full (tự phân trang 1..N)\n"
-        "— Tuân thủ doc Accesstrade và logic APPROVED đang có."
-    )
-)
-async def ingest_v2_offers_all_approved(
-    req: IngestAllApprovedReq,
-    db: Session = Depends(get_db),
-):
-    # Lấy danh sách merchant đã APPROVED & campaign đang chạy
-    approved_merchants = list_approved_merchants_api(db)  # ['shopee', 'lazada', ...]
-    logger.info("[ALL-APPROVED] merchants=%s", approved_merchants)
-
-    out = {
-        "ok": True,
-        "approved_merchants": approved_merchants,
-        "promotions": 0,
-        "offers_from_promotions": 0,
-        "top_products_offers": 0,
-        "datafeeds_offers": 0,
-        "datafeeds_pages": 0,
-    }
-
-    # 1) Promotions (chạy theo từng merchant đã APPROVED để tránh rác)
-    if req.include_promotions and approved_merchants:
-        for m in approved_merchants:
-            try:
-                res = await ingest_v2_promotions(
-                    IngestV2PromotionsReq(merchant=m, create_offers=True),
-                    db
-                )
-                out["promotions"] += int(res.get("promotions") or 0)
-                out["offers_from_promotions"] += int(res.get("offers_from_promotions") or 0)
-                if req.throttle_ms:
-                    await asyncio.sleep(req.throttle_ms / 1000.0)
-            except Exception as e:
-                logger.error("[ALL-APPROVED] promotions for %s failed: %s", m, e)
-
-    # 2) Top products (theo từng merchant đã APPROVED)
-    if req.include_top_products and approved_merchants:
-        for m in approved_merchants:
-            try:
-                res = await ingest_v2_top_products(
-                    IngestV2TopProductsReq(
-                        merchant=m,
-                        date_from=req.top_date_from,
-                        date_to=req.top_date_to,
-                        limit_per_page=req.top_limit_per_page,
-                        max_pages=req.top_max_pages,
-                        throttle_ms=req.throttle_ms,
-                    ),
-                    db
-                )
-                out["top_products_offers"] += int(res.get("imported") or 0)
-                if req.throttle_ms:
-                    await asyncio.sleep(req.throttle_ms / 1000.0)
-            except Exception as e:
-                logger.error("[ALL-APPROVED] top_products for %s failed: %s", m, e)
-
-    # 3) Datafeeds (full, tự phân trang) — bản thân hàm đã yêu cầu APPROVED trong quá trình ghi
-    if req.include_datafeeds:
-        try:
-            res = await ingest_accesstrade_datafeeds_all(
-                IngestAllDatafeedsReq(
-                    params=None,
-                    limit_per_page=req.datafeeds_limit_per_page,
-                    max_pages=req.datafeeds_max_pages,
-                    throttle_ms=req.throttle_ms,
-                ),
-                db
-            )
-            out["datafeeds_offers"] = int(res.get("imported") or 0)
-            out["datafeeds_pages"] = int(res.get("pages") or 0)
-        except Exception as e:
-            logger.error("[ALL-APPROVED] datafeeds failed: %s", e)
-
-    return out
+## Removed deprecated endpoint: POST /ingest/v2/offers/all-approved (per requirements)
 
 @app.put(
     "/offers/{offer_id}",
@@ -1905,9 +1678,47 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file .xlsx")
 
     try:
-        df = pd.read_excel(file.file)
+        # Read specifically the 'Products' sheet (if present). Fall back to first sheet.
+        try:
+            df = pd.read_excel(file.file, sheet_name="Products")
+        except Exception:
+            # fallback to first sheet
+            file.file.seek(0)
+            df = pd.read_excel(file.file)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Lỗi đọc file Excel: {e}")
+
+    # Nếu dòng đầu tiên là hàng tiêu đề dịch (được thêm khi export), hãy bỏ qua nó
+    try:
+        # map dịch tương tự export
+        trans_products = {
+            "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "merchant": "Nhà bán",
+            "title": "Tên sản phẩm", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
+            "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
+            "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
+            "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
+            "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
+            "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
+            "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+            "extra_raw": "Extra gốc",
+        }
+        if not df.empty:
+            first = df.iloc[0]
+            matches = 0
+            total_keys = 0
+            for k, v in trans_products.items():
+                if k in df.columns:
+                    total_keys += 1
+                    try:
+                        if str(first[k]).strip() == str(v).strip():
+                            matches += 1
+                    except Exception:
+                        pass
+            # nếu phần lớn các cột khớp với bản dịch → coi đây là hàng tiêu đề dịch và drop
+            if total_keys and matches >= max(3, total_keys // 3):
+                df = df.iloc[1:].reset_index(drop=True)
+    except Exception:
+        pass
     # Chỉ import Excel mới áp dụng policy; mặc định False nếu chưa set
     flags = crud.get_policy_flags(db)
     only_with_commission = bool(flags.get("only_with_commission"))
@@ -1916,15 +1727,16 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
 
     imported = 0
     for _, row in df.iterrows():
+        # Map columns expected in Products sheet coming from API datafeeds
         base = {
             "source": "excel",
-            "source_id": str(row.get("source_id") or row.get("id") or ""),
-            "merchant": str(row.get("merchant") or "").lower(),
-            "title": str(row.get("title") or ""),
-            "url": str(row.get("url") or ""),
-            "affiliate_url": row.get("affiliate_url"),
-            "image_url": row.get("image_url"),
-            "price": float(row.get("price")) if row.get("price") else None,
+            "source_id": str(row.get("source_id") or row.get("product_id") or row.get("id") or ""),
+            "merchant": str(row.get("merchant") or row.get("campaign") or "").lower(),
+            "title": str(row.get("title") or row.get("name") or ""),
+            "url": str(row.get("url") or row.get("landing_url") or ""),
+            "affiliate_url": row.get("affiliate_url") or row.get("aff_link"),
+            "image_url": row.get("image_url") or row.get("image") or row.get("thumbnail"),
+            "price": float(row.get("price")) if row.get("price") not in (None, "") else None,
             "currency": row.get("currency") or "VND",
         }
 
@@ -1933,23 +1745,23 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         if pd.notna(campaign_id):
             base["campaign_id"] = str(campaign_id).strip()
 
-        # Gom promotion
+        # Gom promotion (if Products sheet contains promotion fields)
         promotion = {
-            "name": row.get("promotion_name"),
-            "content": row.get("promotion_content"),
-            "start_time": row.get("promotion_start_time"),
-            "end_time": row.get("promotion_end_time"),
-            "coupon": row.get("promotion_coupon"),
-            "link": row.get("promotion_link"),
+            "name": row.get("promotion_name") or row.get("name"),
+            "content": row.get("promotion_content") or row.get("content") or row.get("description"),
+            "start_time": row.get("promotion_start_time") or row.get("start_time"),
+            "end_time": row.get("promotion_end_time") or row.get("end_time"),
+            "coupon": row.get("promotion_coupon") or row.get("coupon"),
+            "link": row.get("promotion_link") or row.get("link"),
         }
         promotion = {k: v for k, v in promotion.items() if pd.notna(v)}
 
-        # Gom commission (nếu file có các cột này)
+        # Gom commission (nếu Products sheet có các cột này)
         commission = {
-            "sales_ratio": row.get("commission_sales_ratio"),
-            "sales_price": row.get("commission_sales_price"),
-            "reward_type": row.get("commission_reward_type"),
-            "target_month": row.get("commission_target_month"),
+            "sales_ratio": row.get("sales_ratio") or row.get("commission_sales_ratio"),
+            "sales_price": row.get("sales_price") or row.get("commission_sales_price"),
+            "reward_type": row.get("reward_type") or row.get("commission_reward_type"),
+            "target_month": row.get("target_month") or row.get("commission_target_month"),
         }
         commission = {k: v for k, v in commission.items() if pd.notna(v)}
 
@@ -2184,10 +1996,16 @@ def export_offers_excel(
     df_promotions_rows = []
 
     for base in rows:
+        # Tách extra trước để dùng cho Products row
+        try:
+            extra = json.loads(base.get("extra_raw", "{}")) if base.get("extra_raw") else {}
+        except Exception:
+            extra = {}
+
         # base có: id, source, source_id, merchant, title, url, affiliate_url, image_url,
         # price, currency, campaign_id, updated_at, desc, cate, shop_name, update_time_raw,
-        # promotion_* (nếu đã map), extra_raw (full JSON)
-        # -> Ta vẫn giữ Products gọn: không dàn tràn commission/promotion vào đây
+        # extra_raw (full JSON)
+        # -> Products: giữ gọn + bổ sung một số trường datafeeds có trong API (nếu có trong extra)
         prod_row = {
             "id": base.get("id"),
             "source": base.get("source"),
@@ -2200,6 +2018,15 @@ def export_offers_excel(
             "price": base.get("price"),
             "currency": base.get("currency"),
             "campaign_id": base.get("campaign_id"),
+            "product_id": extra.get("product_id") or base.get("product_id"),
+            "affiliate_link_available": extra.get("affiliate_link_available"),
+            # Bổ sung trường từ datafeeds nếu có
+            "domain": extra.get("domain"),
+            "sku": extra.get("sku"),
+            "discount": extra.get("discount"),
+            "discount_amount": extra.get("discount_amount"),
+            "discount_rate": extra.get("discount_rate"),
+            "status_discount": extra.get("status_discount"),
             "updated_at": base.get("updated_at"),
             # Một số trường extra tiện tra cứu
             "desc": base.get("desc"),
@@ -2209,12 +2036,6 @@ def export_offers_excel(
             "extra_raw": base.get("extra_raw"),
         }
         df_products_rows.append(prod_row)
-
-        # Tách extra để đọc commission/promotion/campaign-info
-        try:
-            extra = json.loads(base.get("extra_raw", "{}")) if base.get("extra_raw") else {}
-        except Exception:
-            extra = {}
 
 
         # --- Campaigns sheet (join từ bảng Campaign)
@@ -2239,6 +2060,16 @@ def export_offers_excel(
             "status": (c.status if c else _campaign_field_from_log(cid, "status")),
             "start_time": (c.start_time if c else None),
             "end_time": end_val,      # yyyy-mm-dd hoặc API_EMPTY/API_MISSING
+            # Bổ sung các trường từ API campaigns nếu log có
+            "category": _campaign_field_from_log(cid, "category"),
+            "conversion_policy": _campaign_field_from_log(cid, "conversion_policy"),
+            "cookie_duration": _campaign_field_from_log(cid, "cookie_duration"),
+            "cookie_policy": _campaign_field_from_log(cid, "cookie_policy"),
+            "description": _campaign_field_from_log(cid, "description"),
+            "scope": _campaign_field_from_log(cid, "scope"),
+            "sub_category": _campaign_field_from_log(cid, "sub_category"),
+            "type": _campaign_field_from_log(cid, "type"),
+            "campaign_url": _campaign_field_from_log(cid, "url"),
         }
 
         df_campaigns_rows.append(camp_row)
@@ -2309,20 +2140,31 @@ def export_offers_excel(
     df_commissions = pd.DataFrame(df_commissions_rows)
     df_promotions = pd.DataFrame(df_promotions_rows)
 
-    # Hàng dịch nghĩa (tiếng Việt) cho từng sheet
+    # Keep sheet column names matching API-normalized fields.
+    # Also insert a Vietnamese human-readable header row as the first row of each sheet
+    # so exported files are easy to read for Vietnamese users while remaining machine-readable.
+
+    # Hàng dịch nghĩa (tiếng Việt) cho từng sheet (giữ lại như yêu cầu)
     trans_products = {
         "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "merchant": "Nhà bán",
         "title": "Tên sản phẩm", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
         "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
-        "campaign_id": "Chiến dịch", "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
+        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
         "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
         "extra_raw": "Extra gốc",
     }
     trans_campaigns = {
         "product_id": "ID sản phẩm", "merchant": "Nhà bán",
-        "campaign_name": "Tên chiến dịch", "approval_type": "Approval", "user_status": "Trạng thái của tôi",
-        "status": "Tình trạng",  # NEW
+        "campaign_id": "Mã chiến dịch", "campaign_name": "Tên chiến dịch", "approval_type": "Approval", "user_status": "Trạng thái của tôi",
+        "status": "Tình trạng",
         "start_time": "Bắt đầu", "end_time": "Kết thúc",
+        "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
+        "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
+        "description": "Mô tả", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+        "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
         "product_id": "ID sản phẩm", "sales_ratio": "Tỷ lệ (%)",
