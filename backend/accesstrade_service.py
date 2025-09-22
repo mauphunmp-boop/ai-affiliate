@@ -6,7 +6,7 @@ import logging
 import json
 from urllib.parse import urlparse
 import os
-from datetime import datetime
+from datetime import datetime, UTC
 
 logger = logging.getLogger("affiliate_api")
 
@@ -24,7 +24,7 @@ def _log_jsonl(filename: str, payload: dict) -> None:
         _ensure_log_dir()
         fpath = os.path.join(_LOG_DIR, filename)
         data = dict(payload)
-        data.setdefault("ts", datetime.utcnow().isoformat() + "Z")
+        data.setdefault("ts", datetime.now(UTC).isoformat())
         with open(fpath, "a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
     except Exception as e:

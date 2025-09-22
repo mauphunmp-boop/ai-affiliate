@@ -1,4 +1,5 @@
 from pydantic import BaseModel, HttpUrl, constr, field_validator
+from pydantic import ConfigDict
 from datetime import datetime
 from typing import Optional, Dict
 
@@ -13,8 +14,7 @@ class AffiliateLinkBase(BaseModel):
     def convert_url_to_str(cls, v):
         return str(v)
 
-    class Config:
-        from_attributes = True   # Cho phép map từ SQLAlchemy model
+    model_config = ConfigDict(from_attributes=True)  # Cho phép map từ SQLAlchemy model
 
 
 # ----- Create Schema -----
@@ -43,9 +43,7 @@ class APIConfigCreate(APIConfigBase):
 
 class APIConfigOut(APIConfigBase):
     id: int
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class AffiliateTemplateBase(BaseModel):
     merchant: str
@@ -59,9 +57,7 @@ class AffiliateTemplateCreate(AffiliateTemplateBase):
 
 class AffiliateTemplateOut(AffiliateTemplateBase):
     id: int
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- THÊM MỚI: schemas cho ProductOffer ---
 class ProductOfferBase(BaseModel):
@@ -120,8 +116,7 @@ class ProductOfferOut(ProductOfferBase):
     shop_name: str | None = None
     update_time_raw: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- NEW: schema cho PriceHistory ---
 class PriceHistoryBase(BaseModel):
@@ -135,9 +130,7 @@ class PriceHistoryCreate(PriceHistoryBase):
 
 class PriceHistoryOut(PriceHistoryBase):
     id: int
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- NEW: schema cho Campaign ---
 class CampaignBase(BaseModel):
@@ -158,9 +151,7 @@ class CampaignUpdate(CampaignBase):
 
 class CampaignOut(CampaignBase):
     updated_at: datetime | None = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 # --- NEW: schema cho CommissionPolicy ---
 class CommissionPolicyBase(BaseModel):
@@ -179,9 +170,7 @@ class CommissionPolicyUpdate(CommissionPolicyBase):
 class CommissionPolicyOut(CommissionPolicyBase):
     id: int
     updated_at: datetime | None = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # --- NEW: schema cho Promotion ---
@@ -203,6 +192,4 @@ class PromotionUpdate(PromotionBase):
 class PromotionOut(PromotionBase):
     id: int
     updated_at: datetime | None = None
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

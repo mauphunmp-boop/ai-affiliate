@@ -425,7 +425,11 @@ class IngestReq(BaseModel):
 class IngestAllDatafeedsReq(BaseModel):
     """
     Ingest toàn bộ datafeeds trong một lần (tự phân trang nội bộ).
-    - params: có thể truyền campaign/domain nếu muốn lọc (vd: {"campaign":"shopee","domain":"shopee.vn"})
+    - params: bộ lọc chuyển thẳng đến provider (Accesstrade) và một số filter nội bộ:
+        - merchant: lọc theo merchant/campaign slug của AT (vd: "tiki", "tiktokshop").
+        - domain: lọc theo domain sản phẩm (vd: "tiki.vn").
+        - campaign_id | camp_id: cố định đúng campaign_id cần ingest (ưu tiên nếu có).
+        - update_from/update_to, price_from/to, discount_*: chuyển tiếp xuống API AT nếu hỗ trợ.
     - limit_per_page: kích thước trang khi gọi ra Accesstrade (mặc định 100)
     - max_pages: chặn vòng lặp vô hạn nếu API trả bất thường (mặc định 2000 trang)
     - throttle_ms: nghỉ giữa các lần gọi để tôn trọng rate-limit (mặc định 0ms)
@@ -761,6 +765,7 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
             pass
 
     for it in items:
+        policies = []  # ensure defined for each iteration
         camp_id = str(it.get("campaign_id") or it.get("campaign_id_str") or "").strip()
         merchant = str(it.get("merchant") or it.get("campaign") or "").lower().strip()
         _alias = {"lazadacps": "lazada", "tikivn": "tiki"}
@@ -874,7 +879,7 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
                 (_camp_row.status == "running") and (us in ("APPROVED", "SUCCESSFUL"))
             )
 
-        if not await _check_url_alive(data["url"]):
+        if not await _check_url_alive(str(data.get("url") or "")):
             logger.info("Skip dead product [manual ingest]: title='%s'", data.get("title"))
             _vlog("dead_url", {"url": data.get("url")})
             continue
@@ -884,16 +889,6 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
 
     return {"ok": True, "imported": imported}
 
-@app.post(
-    "/ingest/accesstrade/datafeeds/all",
-    tags=["Offers 🛒"],
-    summary="Ingest TOÀN BỘ datafeeds (tự phân trang)",
-    description=(
-        "Gọi Accesstrade /v1/datafeeds nhiều lần (page=1..N) cho đến khi hết dữ liệu, "
-        "không yêu cầu client truyền page/limit."
-    ),
-    include_in_schema=False
-)
 async def ingest_accesstrade_datafeeds_all(
     req: IngestAllDatafeedsReq,
     db: Session = Depends(get_db),
@@ -1002,10 +997,18 @@ async def ingest_accesstrade_datafeeds_all(
     # NEW: Cache commission theo campaign_id để tránh spam API (fix NameError)
     cache_commissions: dict[str, list[dict]] = {}
 
-    # 3) Tham số gọi API datafeeds
+    # 3) Tham số gọi API datafeeds + bộ lọc phía server
     base_params = dict(req.params or {})
     base_params.pop("page", None)   # client không cần truyền
     base_params.pop("limit", None)  # client không cần truyền
+
+    # Chuẩn hoá alias filters
+    filter_merchant = (base_params.get("merchant") or base_params.get("campaign") or base_params.get("merchant_slug"))
+    if isinstance(filter_merchant, str):
+        filter_merchant = filter_merchant.strip().lower()
+    filter_cid = (base_params.get("campaign_id") or base_params.get("camp_id"))
+    if isinstance(filter_cid, str):
+        filter_cid = filter_cid.strip()
 
     imported = 0
     total_pages = 0
@@ -1030,6 +1033,31 @@ async def ingest_accesstrade_datafeeds_all(
             if c.merchant
         }
 
+    # Áp dụng filter merchant/campaign_id nếu có
+    forced_cid_by_merchant: dict[str, str] = {}
+    if filter_cid:
+        # Nếu campaign_id có trong active list, giới hạn merchant tương ứng
+        cid = str(filter_cid)
+        m = active_campaigns.get(cid)
+        if m:
+            m_norm = (m or "").lower()
+            approved_merchants = {m_norm} if m_norm in approved_merchants else set()
+            forced_cid_by_merchant[m_norm] = cid
+        else:
+            # Không tìm thấy campaign_id đang chạy → không ingest gì
+            approved_merchants = set()
+
+    if filter_merchant:
+        m_norm = filter_merchant
+        # alias nội bộ
+        _alias = {"lazadacps": "lazada", "tikivn": "tiki"}
+        m_norm = _alias.get(m_norm, m_norm)
+        if approved_merchants:
+            approved_merchants = {m for m in approved_merchants if (m == m_norm or m.endswith(m_norm) or (m_norm in m))}
+        else:
+            # nếu trước đó rỗng (ví dụ đã lọc theo campaign_id không khớp) thì giữ rỗng
+            pass
+
     # verbose helper
     def _vlog(reason: str, extra: dict | None = None):
         try:
@@ -1048,6 +1076,9 @@ async def ingest_accesstrade_datafeeds_all(
 
         # Xác định campaign_id tương ứng merchant đang fetch (ưu tiên exact, sau đó suffix/contains)
         cid_for_fetch = None
+        # Ưu tiên forced campaign id nếu đã xác định
+        if m in forced_cid_by_merchant:
+            cid_for_fetch = forced_cid_by_merchant[m]
         for cid, mm in active_campaigns.items():
             if (mm or "").lower() == merchant_fetch or (mm or "").lower() == m:
                 cid_for_fetch = cid
@@ -1235,13 +1266,6 @@ async def ingest_accesstrade_datafeeds_all(
 
     return {"ok": True, "imported": imported, "pages": total_pages}
 
-@app.post(
-    "/ingest/v2/campaigns/sync",
-    tags=["Campaigns 📢"],
-    summary="Đồng bộ danh sách campaigns từ Accesstrade",
-    description="Lưu/ cập nhật campaigns vào DB để làm chuẩn eligibility và theo dõi.",
-    include_in_schema=False
-)
 async def ingest_v2_campaigns_sync(
     req: CampaignsSyncReq,
     db: Session = Depends(get_db),
@@ -1352,27 +1376,8 @@ async def ingest_v2_campaigns_sync(
 
     return {"ok": True, "imported": imported}
 
-# ---------------- Aliases for consistent Accesstrade ingest routes ----------------
-@app.post(
-    "/ingest/accesstrade/campaigns/sync",
-    tags=["Campaigns 📢"],
-    summary="[Alias] Đồng bộ campaigns (Accesstrade)",
-    description="Alias ổn định cho /ingest/v2/campaigns/sync (tương thích ngược).",
-    include_in_schema=False
-)
-async def ingest_accesstrade_campaigns_sync_alias(
-    req: CampaignsSyncReq,
-    db: Session = Depends(get_db),
-):
-    return await ingest_v2_campaigns_sync(req, db)
+# (Removed) Aliases for Accesstrade routes — use unified endpoints instead
 
-@app.post(
-    "/ingest/v2/promotions",
-    tags=["Offers 🛒"],
-    summary="Ingest khuyến mãi (offers_informations) cho merchant đã duyệt",
-    description="Đồng bộ promotions và (tùy chọn) map thành offers tối thiểu để hiển thị.",
-    include_in_schema=False
-)
 async def ingest_v2_promotions(
     req: IngestV2PromotionsReq,
     db: Session = Depends(get_db),
@@ -1454,7 +1459,7 @@ async def ingest_v2_promotions(
                     url_to_check = link or aff
 
                     # (policy) chỉ check khi bật cờ
-                    alive = True if not req.check_urls else await _check_url_alive(url_to_check)
+                    alive = True if not req.check_urls else await _check_url_alive(str(url_to_check or ""))
                     if not alive:
                         logger.debug("[PROMO] skip: dead url %s", url_to_check)
                         continue
@@ -1503,26 +1508,8 @@ async def ingest_v2_promotions(
 
     return {"ok": True, "promotions": imported_promos, "offers_from_promotions": imported_offers}
 
-@app.post(
-    "/ingest/accesstrade/promotions",
-    tags=["Offers 🛒"],
-    summary="[Alias] Ingest promotions (Accesstrade)",
-    description="Alias ổn định cho /ingest/v2/promotions (tương thích ngược).",
-    include_in_schema=False
-)
-async def ingest_accesstrade_promotions_alias(
-    req: IngestV2PromotionsReq,
-    db: Session = Depends(get_db),
-):
-    return await ingest_v2_promotions(req, db)
+"""Legacy provider-specific routes have been removed. Use unified endpoints."""
 
-@app.post(
-    "/ingest/v2/top-products",
-    tags=["Offers 🛒"],
-    summary="Ingest Top Products (bán chạy) theo merchant & khoảng ngày",
-    description="Đồng bộ top_products theo trang (1..N), map thành offers tối thiểu.",
-    include_in_schema=False
-)
 async def ingest_v2_top_products(
     req: IngestV2TopProductsReq,
     db: Session = Depends(get_db),
@@ -1565,8 +1552,8 @@ async def ingest_v2_top_products(
 
     # DEFAULT date range: 7 ngày gần nhất nếu không truyền
     if not req.date_from or not req.date_to:
-        from datetime import datetime, timedelta
-        _to = datetime.utcnow().date()
+        from datetime import datetime, timedelta, UTC
+        _to = datetime.now(UTC).date()
         _from = _to - timedelta(days=7)
         date_from_use = req.date_from or _from.strftime("%Y-%m-%d")
         date_to_use = req.date_to or _to.strftime("%Y-%m-%d")
@@ -1604,7 +1591,7 @@ async def ingest_v2_top_products(
                 url_to_check = link or aff
 
                 # (policy) chỉ check khi bật cờ
-                alive = True if not req.check_urls else await _check_url_alive(url_to_check)
+                alive = True if not req.check_urls else await _check_url_alive(str(url_to_check or ""))
                 if not alive:
                     logger.debug("[TOP] skip: dead url %s", url_to_check)
                     continue
@@ -1732,33 +1719,9 @@ async def ingest_datafeeds_all_unified(req: DatafeedsAllUnifiedReq, db: Session 
         return await ingest_accesstrade_datafeeds_all(inner, db)
     raise HTTPException(status_code=400, detail=f"Provider '{prov}' hiện chưa được hỗ trợ")
 
-@app.post(
-    "/ingest/accesstrade/top-products",
-    tags=["Offers 🛒"],
-    summary="[Alias] Ingest top products (Accesstrade)",
-    description="Alias ổn định cho /ingest/v2/top-products (tương thích ngược).",
-    include_in_schema=False
-)
-async def ingest_accesstrade_top_products_alias(
-    req: IngestV2TopProductsReq,
-    db: Session = Depends(get_db),
-):
-    return await ingest_v2_top_products(req, db)
+"""Legacy provider-specific routes have been removed. Use unified endpoints."""
 
-# Optional: generic -> Accesstrade alias for convenience
-@app.post(
-    "/ingest/accesstrade/products",
-    tags=["Offers 🛒"],
-    summary="[Alias] Ingest sản phẩm (Accesstrade generic)",
-    description="Alias gọi /ingest/products với provider=accesstrade.",
-    include_in_schema=False
-)
-async def ingest_accesstrade_products_alias(
-    req: IngestReq,
-    db: Session = Depends(get_db),
-):
-    req.provider = "accesstrade"
-    return await ingest_products(req, db)
+"""Legacy provider-specific routes have been removed. Use unified endpoints."""
 
 # ================================
 # NEW: One-shot ingest ALL sources for APPROVED merchants
@@ -1865,18 +1828,18 @@ async def scheduler_linkcheck_rotate(
     }
 
 # --- API test nhanh: check 1 sản phẩm trong DB ---
-from datetime import datetime
+from datetime import datetime, UTC
+
 @app.get(
     "/offers/check/{offer_id}",
     tags=["Offers 🛒"],
     summary="Kiểm tra 1 sản phẩm (alive/dead)",
-    description="Kiểm tra nhanh **trạng thái link** của một sản phẩm trong DB theo **ID**."
+    description="Kiểm tra nhanh trạng thái link của một sản phẩm trong DB theo ID."
 )
 async def check_offer_status(offer_id: int, db: Session = Depends(get_db)):
     offer = db.query(models.ProductOffer).filter(models.ProductOffer.id == offer_id).first()
     if not offer:
         raise HTTPException(status_code=404, detail="Offer not found")
-
     alive = await _check_url_alive(offer.url)  # chỉ check link gốc để tránh click ảo
     return {
         "id": offer.id,
@@ -1884,8 +1847,10 @@ async def check_offer_status(offer_id: int, db: Session = Depends(get_db)):
         "url": offer.url,
         "affiliate_url": offer.affiliate_url,
         "alive": alive,
-        "checked_at": datetime.utcnow().isoformat() + "Z"
+    "checked_at": datetime.now(UTC).isoformat()
     }
+
+"""Legacy v2 routes have been removed. Use unified endpoints."""
 
 @app.delete(
     "/offers",
@@ -2347,19 +2312,19 @@ def export_offers_excel(
         cid = str(base.get("campaign_id") or "") if base.get("campaign_id") is not None else ""
         pr_list = promotions_by_cid.get(cid, [])
 
-        def _join(vals):
+        def _join_prom(vals):
             vals = [str(v) for v in vals if v not in (None, "")]
             return "; ".join(sorted(set(vals))) if vals else None
 
         if pr_list:
             df_promotions_rows.append({
                 "product_id": base.get("id"),
-                "promotion_name": _join([p.name for p in pr_list]),
-                "promotion_content": _join([p.content for p in pr_list]),
-                "promotion_start_time": _join([p.start_time for p in pr_list]),
-                "promotion_end_time": _join([p.end_time for p in pr_list]),
-                "promotion_coupon": _join([p.coupon for p in pr_list]),
-                "promotion_link": _join([p.link for p in pr_list]),
+                "promotion_name": _join_prom([p.name for p in pr_list]),
+                "promotion_content": _join_prom([p.content for p in pr_list]),
+                "promotion_start_time": _join_prom([p.start_time for p in pr_list]),
+                "promotion_end_time": _join_prom([p.end_time for p in pr_list]),
+                "promotion_coupon": _join_prom([p.coupon for p in pr_list]),
+                "promotion_link": _join_prom([p.link for p in pr_list]),
             })
         else:
             # Không có promotion trong DB → tra log theo merchant để gắn nhãn

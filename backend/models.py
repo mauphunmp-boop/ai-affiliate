@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Float
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime
+from datetime import datetime, UTC
 
 class AffiliateLink(Base):
     __tablename__ = "affiliate_links"
@@ -63,7 +63,7 @@ class ProductOffer(Base):
     product_id = Column(String, index=True, nullable=True)              # id sản phẩm theo nguồn (nếu có)
 
     extra = Column(Text, nullable=True)             # string JSON tuỳ ý
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 # --- NEW: bảng price_history (lưu lịch sử giá) ---
 class PriceHistory(Base):
@@ -73,7 +73,7 @@ class PriceHistory(Base):
     offer_id = Column(Integer, ForeignKey("product_offers.id"), index=True, nullable=False)
     price = Column(Float, nullable=True)
     currency = Column(String, default="VND")
-    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    recorded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
 
 # --- NEW: bảng campaigns (thông tin chiến dịch) ---
 class Campaign(Base):
@@ -90,7 +90,7 @@ class Campaign(Base):
     # trạng thái đăng ký/duyệt của PUBLISHER (bạn)
     user_registration_status = Column(String, index=True, nullable=True)  # NOT_REGISTERED/PENDING/APPROVED
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 # --- NEW: bảng commission_policies (chính sách hoa hồng theo campaign) ---
 class CommissionPolicy(Base):
@@ -103,7 +103,7 @@ class CommissionPolicy(Base):
     sales_price = Column(Float, nullable=True)     # hoa hồng cố định (nếu có)
     target_month = Column(String, nullable=True)   # điều kiện theo tháng (nếu có)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
 
 # --- NEW: bảng promotions (khuyến mãi theo campaign) ---
 class Promotion(Base):
@@ -118,4 +118,4 @@ class Promotion(Base):
     coupon = Column(String, nullable=True)         # mã giảm giá (nếu có)
     link = Column(String, nullable=True)           # link KM (nếu có)
 
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
