@@ -36,6 +36,15 @@ def _get_at_config(db: Session):
         raise ValueError("Chưa cấu hình APIConfig 'accesstrade'")
     return cfg
 
+def _is_mock_cfg(cfg) -> bool:
+    try:
+        if str(os.getenv("AT_MOCK", "")).strip() == "1":
+            return True
+        base = (getattr(cfg, "base_url", "") or "").strip().lower()
+        return base.startswith("mock://")
+    except Exception:
+        return False
+
 def _headers(api_key: str) -> Dict[str, str]:
     return {
         "Authorization": f"Token {api_key}",
@@ -59,6 +68,12 @@ async def fetch_campaigns_full_all(
     Kết thúc khi 1 cửa sổ trả về toàn trang rỗng.
     """
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        return [
+            {"campaign_id": "CAMP1", "merchant": "shopee", "name": "Shopee", "status": "running", "approval": "manual"},
+            {"campaign_id": "CAMP2", "merchant": "lazada", "name": "Lazada", "status": "paused", "approval": "manual"},
+            {"campaign_id": "CAMP3", "merchant": "tiki", "name": "Tiki", "status": "running", "approval": "successful"},
+        ]
     base_url = cfg.base_url.rstrip("/") + "/v1/campaigns"
 
     # Map status về 'running' / 'paused'
@@ -135,6 +150,30 @@ async def fetch_campaigns_full_all(
 # --- Lấy sản phẩm từ datafeeds ---
 async def fetch_products(db: Session, path: str, params: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        p = dict(params or {})
+        page = int(p.get("page", 1) or 1)
+        limit = int(p.get("limit", 100) or 100)
+        if page > 1:
+            return []
+        items: list[dict] = []
+        for i in range(min(5, limit)):
+            idx = i + 1
+            items.append({
+                "id": f"P{page}{idx}",
+                "name": f"SP Tiki {idx}",
+                "url": f"https://tiki.vn/product/{idx}",
+                "aff_link": f"https://go.mock/aff?pid={idx}",
+                "image": "https://via.placeholder.com/300",
+                "price": 99000 + idx,
+                "currency": "VND",
+                "campaign_id": "CAMP3",
+                "merchant": "tikivn",
+                "cate": "cat1",
+                "shop_name": "Shop Mock",
+                "update_time": "2025-09-20T00:00:00Z",
+            })
+        return items
     url = cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
 
     # Chuẩn hoá params cho /v1/datafeeds: dùng 'campaign' thay vì 'merchant'
@@ -145,9 +184,23 @@ async def fetch_products(db: Session, path: str, params: Dict[str, Any] | None =
 
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=_headers(cfg.api_key), params=_params)
-        r.raise_for_status()
-        data = r.json()
-        items = data.get("data") if isinstance(data, dict) else data
+        ok = (r.status_code == 200)
+        try:
+            data = r.json() if ok else None
+        except Exception:
+            data = None
+        items = data.get("data") if ok and isinstance(data, dict) else []
+        # JSONL log for diagnostics
+        _log_jsonl("datafeeds.jsonl", {
+            "endpoint": "datafeeds" if url.endswith("/v1/datafeeds") else path,
+            "status_code": r.status_code,
+            "ok": ok,
+            "params": _params,
+            "items_count": len(items),
+            "raw_total": (data.get("total") if isinstance(data, dict) else None),
+        })
+        if not ok:
+            r.raise_for_status()
         return items or []
 
 # --- Compatibility helper cho main.py: lấy datafeeds theo trang ---
@@ -175,6 +228,15 @@ async def fetch_promotions(db: Session, merchant: str) -> List[Dict[str, Any]]:
     Lấy danh sách khuyến mãi của merchant từ Accesstrade.
     """
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        return [{
+            "name": f"Promo {merchant.upper()} 15%",
+            "content": "Giảm 15% cho đơn hàng trên 200k",
+            "start_time": "2025-09-01",
+            "end_time": "2025-10-01",
+            "coupon": "SALE15",
+            "link": f"https://{merchant}.vn/promo",
+        }]
     url = cfg.base_url.rstrip("/") + "/v1/offers_informations"
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=_headers(cfg.api_key), params={"merchant": merchant})
@@ -208,6 +270,18 @@ async def fetch_top_products(
     Trả về list các record có thể gồm: product_id, name, image, link, aff_link, price, discount, ...
     """
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        out: list[dict] = []
+        for i in range(3):
+            out.append({
+                "product_id": f"TP{i+1}",
+                "name": f"Top {merchant} #{i+1}",
+                "image": "https://via.placeholder.com/300",
+                "link": f"https://{merchant}.vn/top/{i+1}",
+                "aff_link": f"https://go.mock/top?i={i+1}",
+                "price": 150000 + i * 10000,
+            })
+        return out
     url = cfg.base_url.rstrip("/") + "/v1/top_products"
     params = {
         "merchant": merchant,
@@ -244,6 +318,8 @@ async def fetch_active_campaigns(db: Session) -> Dict[str, str]:
     Trả về dict {campaign_id: merchant_name_lower}.
     """
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        return {"CAMP1": "shopee", "CAMP3": "tikivn"}
     url = cfg.base_url.rstrip("/") + "/v1/campaigns"
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -273,6 +349,26 @@ async def fetch_active_campaigns(db: Session) -> Dict[str, str]:
 # --- NEW: Lấy chi tiết 1 campaign (kèm trạng thái đăng ký của user nếu API trả về) ---
 async def fetch_campaign_detail(db: Session, campaign_id: str) -> Dict[str, Any] | None:
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        return {
+            "campaign_id": campaign_id,
+            "merchant": "tikivn" if campaign_id == "CAMP3" else "shopee",
+            "name": "Mock Campaign",
+            "status": "running",
+            "approval": "manual",
+            "user_registration_status": "APPROVED",
+            "start_time": "2025-01-01",
+            "end_time": "2025-12-31",
+            "category": "E-commerce",
+            "conversion_policy": "CPS",
+            "cookie_duration": 2592000,
+            "cookie_policy": "Last click",
+            "description": "Mock detail",
+            "scope": "VN",
+            "sub_category": "General",
+            "type": "Retail",
+            "url": "https://example.com/campaign",
+        }
     url = cfg.base_url.rstrip("/") + "/v1/campaigns"
     params = {"campaign_id": str(campaign_id)}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -300,6 +396,13 @@ async def fetch_campaign_detail(db: Session, campaign_id: str) -> Dict[str, Any]
 # --- NEW: Lấy commission policies theo campaign_id ---
 async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[str, Any]]:
     cfg = _get_at_config(db)
+    if _is_mock_cfg(cfg):
+        return [{
+            "reward_type": "CPS",
+            "sales_ratio": 12.5,
+            "sales_price": None,
+            "target_month": "2025-09",
+        }]
     url = cfg.base_url.rstrip("/") + "/v1/commission_policies"
 
     async def _call(params: Dict[str, str]) -> tuple[list[dict], int, dict|None]:
@@ -534,7 +637,13 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
         "source_id": str(item.get("id") or item.get("product_id") or item.get("sku") or ""),
         "merchant": merchant,
         "title": item.get("name") or item.get("title") or "No title",
-        "url": item.get("url") or item.get("landing_url") or item.get("product_url"),
+        # Một số payload dùng 'link' thay vì 'url'/'landing_url'/'product_url'
+        "url": (
+            item.get("url")
+            or item.get("landing_url")
+            or item.get("product_url")
+            or item.get("link")
+        ),
         "affiliate_url": item.get("aff_link") or item.get("affiliate_url") or item.get("deeplink") or None,
         "image_url": item.get("image") or item.get("thumbnail") or None,
         "price": price,
