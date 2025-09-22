@@ -2,28 +2,29 @@
 
 This Markdown complements `API Reference.pdf` in a text-friendly format for field names used in import/export Excel. It reflects the current backend implementation.
 
-## Sheets Overview
-- Products: Datafeed/Offers normalized fields per product.
-- Campaigns: Synchronized campaign information (per product/campaign join).
-- Commissions: Commission policies aggregated by campaign (per product row).
-- Promotions: Promotions aggregated by campaign (per product row).
+## Sheets Overview (v2)
+- Products: Chỉ sản phẩm từ API (datafeeds/top_products), có cột `source_type` để phân biệt; dùng cho import/export.
+- Campaigns: Danh sách chiến dịch đã duyệt (APPROVED/SUCCESSFUL), độc lập, không phụ thuộc sản phẩm.
+- Commissions: Danh sách chính sách hoa hồng theo campaign, độc lập.
+- Promotions: Danh sách khuyến mãi, độc lập; có cột `merchant` (join từ campaign khi có).
 
-> Note: The first row in each sheet is a Vietnamese human-readable header. The backend import automatically detects and skips this header row.
+Lưu ý: Hàng đầu tiên của mỗi sheet là tiêu đề tiếng Việt (hiển thị). Backend khi import sẽ tự bỏ qua hàng này. Các cột bắt buộc sẽ có ký hiệu "(*)" trong tiêu đề TV.
 
 ---
 
 ## Sheet: Products
 Technical columns (exact names):
-- id
+- id (export-only)
 - source
-- source_id
-- merchant
-- title
-- url
-- affiliate_url
+- source_id (*)
+- source_type
+- merchant (*)
+- title (*)
+- url (bắt buộc: url hoặc affiliate_url có ít nhất 1)
+- affiliate_url (bắt buộc: url hoặc affiliate_url có ít nhất 1)
 - image_url
 - price
-- currency
+- currency (default VND nếu trống)
 - campaign_id
 - product_id
 - affiliate_link_available
@@ -33,19 +34,19 @@ Technical columns (exact names):
 - discount_amount
 - discount_rate
 - status_discount
-- updated_at
+- updated_at (export-only)
 - desc
 - cate
 - shop_name
 - update_time_raw
-- extra_raw
 
 Vietnamese header (display only):
 - Mã ID
 - Nguồn
-- Mã nguồn
-- Nhà bán
-- Tên sản phẩm
+- Mã nguồn (*)
+- Loại nguồn
+- Nhà bán (*)
+- Tên sản phẩm (*)
 - Link gốc
 - Link tiếp thị
 - Ảnh sản phẩm
@@ -65,22 +66,20 @@ Vietnamese header (display only):
 - Danh mục
 - Tên cửa hàng
 - Thời gian cập nhật từ nguồn
-- Extra gốc
 
 Notes:
-- `product_id`, `affiliate_link_available`, and `update_time_raw` derive from API normalization in `accesstrade_service.map_at_product_to_offer`.
-- `extra_raw` contains JSON string with additional raw attributes.
+- `source_type` phân biệt nguồn ingest: datafeeds/top_products/promotions/manual/excel.
+- `product_id`, `affiliate_link_available`, và `update_time_raw` được chuẩn hóa từ dữ liệu API.
 
 ---
 
-## Sheet: Campaigns
+## Sheet: Campaigns (independent)
 Technical columns:
-- product_id
-- merchant
 - campaign_id
+- merchant
 - campaign_name
 - approval_type
-- user_status
+- user_status (APPROVED/SUCCESSFUL)
 - status
 - start_time
 - end_time
@@ -95,9 +94,8 @@ Technical columns:
 - campaign_url
 
 Vietnamese header:
-- ID sản phẩm
-- Nhà bán
 - Mã chiến dịch
+- Nhà bán
 - Tên chiến dịch
 - Approval
 - Trạng thái của tôi
@@ -119,19 +117,19 @@ Notes:
 
 ---
 
-## Sheet: Commissions
+## Sheet: Commissions (independent)
 Technical columns:
-- product_id
+- campaign_id
+- reward_type
 - sales_ratio
 - sales_price
-- reward_type
 - target_month
 
 Vietnamese header:
-- ID sản phẩm
+- Mã chiến dịch
+- Kiểu thưởng
 - Tỷ lệ (%)
 - Hoa hồng cố định
-- Kiểu thưởng
 - Tháng áp dụng
 
 Notes:
@@ -140,18 +138,20 @@ Notes:
 
 ---
 
-## Sheet: Promotions
+## Sheet: Promotions (independent)
 Technical columns:
-- product_id
-- promotion_name
-- promotion_content
-- promotion_start_time
-- promotion_end_time
-- promotion_coupon
-- promotion_link
+- campaign_id
+- merchant
+- name
+- content
+- start_time
+- end_time
+- coupon
+- link
 
 Vietnamese header:
-- ID sản phẩm
+- Mã chiến dịch
+- Nhà bán
 - Tên khuyến mãi
 - Nội dung
 - Bắt đầu KM
@@ -166,9 +166,10 @@ Notes:
 ---
 
 ## Import Notes
-- Upload endpoint: `POST /offers/import-excel` reads `Products` sheet (fallback to the first sheet if missing).
-- If the first row is the Vietnamese header, the backend automatically skips it.
-- Accepted aliases while importing `Products`:
+- Endpoint: `POST /offers/import-excel` — đọc sheet `Products` (fallback sheet đầu tiên nếu không có).
+- Hàng đầu là tiêu đề tiếng Việt, có dấu "(*)" tại cột bắt buộc; backend tự bỏ qua hàng này khi import.
+- Cột bắt buộc: `source_id`, `merchant`, `title`, và ít nhất một trong `url` hoặc `affiliate_url`.
+- Aliases khi import Products:
   - source_id: `source_id` | `product_id` | `id`
   - merchant: `merchant` | `campaign`
   - title: `title` | `name`
@@ -177,12 +178,12 @@ Notes:
   - image_url: `image_url` | `image` | `thumbnail`
   - price: `price`
   - currency: `currency` (default `VND`)
-- Policy flags for import (from DB, via `/policy-flags` APIs if present):
-  - only_with_commission: when true, only import rows that have commission info.
-  - check_urls: when true, only import rows whose `url` is alive.
+- Policy flags khi import:
+  - only_with_commission: chỉ import hàng có thông tin commission (khi bật)
+  - check_urls: chỉ import hàng có link sống (khi bật)
 
 ---
 
 ## Change Log
-- 2025-09-21: Introduced 4-sheet export format with Vietnamese header row and import compatibility.
-- 2025-09-21: Added datafeeds fields to Products (domain, sku, discount, discount_amount, discount_rate, status_discount) and expanded Campaigns fields per API docs.
+- 2025-09-22: v2 — Chuyên biệt 4 sheet độc lập; Products thêm `source_type`, bỏ `extra_raw`; đánh dấu cột bắt buộc; thêm endpoint tải template.
+- 2025-09-21: v1 — 4 sheet kèm join theo sản phẩm; thêm các trường datafeeds; mở rộng Campaigns fields.

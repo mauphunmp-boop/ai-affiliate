@@ -1889,21 +1889,21 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     # - Hàng 1: tiêu đề kỹ thuật (tên cột gốc) → được pandas dùng làm df.columns
     # - Hàng 2: tiêu đề tiếng Việt (human-readable) → là dòng đầu tiên của df và sẽ bị bỏ qua khi import
     # Nếu không có hàng 2 này, trả lỗi 400 để đảm bảo thống nhất định dạng trong dự án
-    # Map dịch dùng để kiểm tra
+    # Map dịch dùng để kiểm tra (hàng 2). Đánh dấu (*) cho cột bắt buộc.
     trans_products = {
-        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "merchant": "Nhà bán",
-        "title": "Tên sản phẩm", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
+        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn (*)", "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)",
+        "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
         "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
         "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
         "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
         "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
         "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
         "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
-        "extra_raw": "Extra gốc",
     }
     if df.empty:
         raise HTTPException(status_code=400, detail="File Excel trống hoặc không đúng định dạng (thiếu dữ liệu)")
-    # Kiểm tra dòng đầu tiên phải là tiêu đề tiếng Việt
+    # Kiểm tra dòng đầu tiên phải là tiêu đề tiếng Việt (chấp nhận có/không dấu (*))
     first = df.iloc[0]
     matches = 0
     total_keys = 0
@@ -1911,7 +1911,11 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         if k in df.columns:
             total_keys += 1
             try:
-                if str(first[k]).strip() == str(v).strip():
+                def _norm_header(s: str) -> str:
+                    s = str(s or "").strip()
+                    # Bỏ "(*)" nếu có để tương thích ngược
+                    return s.replace("(*)", "").replace("( * )", "").replace("(*) ", "").strip()
+                if _norm_header(str(first[k])) == _norm_header(str(v)):
                     matches += 1
             except Exception:
                 pass
@@ -1934,19 +1938,69 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     from accesstrade_service import _check_url_alive
 
     imported = 0
+    skipped_required = 0
+    required_errors: list[dict] = []
+    
+    def _opt_str(v):
+        try:
+            import pandas as _pd
+            if v is None or (isinstance(v, float) and _pd.isna(v)) or (hasattr(_pd, "isna") and _pd.isna(v)):
+                return None
+        except Exception:
+            if v is None:
+                return None
+        s = str(v)
+        s = s.strip()
+        return s if s != "" else None
     for _, row in df.iterrows():
         # Map columns expected in Products sheet coming from API datafeeds
+        # Coerce and sanitize typical Excel NaN/empty values
+        _price_val = row.get("price")
+        try:
+            if _price_val in (None, "") or (hasattr(pd, "isna") and pd.isna(_price_val)):
+                _price_val = None
+            else:
+                _price_val = float(_price_val)
+        except Exception:
+            _price_val = None
+
         base = {
             "source": "excel",
-            "source_id": str(row.get("source_id") or row.get("product_id") or row.get("id") or ""),
-            "merchant": str(row.get("merchant") or row.get("campaign") or "").lower(),
-            "title": str(row.get("title") or row.get("name") or ""),
-            "url": str(row.get("url") or row.get("landing_url") or ""),
-            "affiliate_url": row.get("affiliate_url") or row.get("aff_link"),
-            "image_url": row.get("image_url") or row.get("image") or row.get("thumbnail"),
-            "price": float(row.get("price")) if row.get("price") not in (None, "") else None,
-            "currency": row.get("currency") or "VND",
+            "source_type": "excel",
+            "source_id": _opt_str(row.get("source_id") or row.get("product_id") or row.get("id") or "") or "",
+            "merchant": (_opt_str(row.get("merchant") or row.get("campaign")) or "").lower(),
+            "title": _opt_str(row.get("title") or row.get("name") or "") or "",
+            "url": _opt_str(row.get("url") or row.get("landing_url") or "") or "",
+            "affiliate_url": _opt_str(row.get("affiliate_url") or row.get("aff_link")),
+            "image_url": _opt_str(row.get("image_url") or row.get("image") or row.get("thumbnail")),
+            "price": _price_val,
+            "currency": _opt_str(row.get("currency")) or "VND",
         }
+
+        # REQUIRED validation: merchant, title, price, and at least one of url/affiliate_url
+        missing = []
+        if not base["merchant"]:
+            missing.append("merchant")
+        if not base["title"]:
+            missing.append("title")
+        if base.get("price") in (None,):
+            missing.append("price")
+        if not (base["url"] or base["affiliate_url"]):
+            missing.append("url|affiliate_url")
+        if missing:
+            skipped_required += 1
+            required_errors.append({"row": int(_)+2, "missing": missing})
+            continue
+
+        # Auto-generate source_id if missing: prefer URL, then affiliate_url, else hash of title+merchant
+        if not base["source_id"]:
+            import hashlib
+            sid_src = base.get("url") or base.get("affiliate_url")
+            if sid_src:
+                base["source_id"] = hashlib.md5(str(sid_src).encode("utf-8")).hexdigest()
+            else:
+                seed = f"{base.get('title')}-{base.get('merchant')}"
+                base["source_id"] = hashlib.md5(seed.encode("utf-8")).hexdigest()
 
         # Ghi campaign_id nếu có trong file Excel
         campaign_id = row.get("campaign_id")
@@ -1973,13 +2027,12 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         }
         commission = {k: v for k, v in commission.items() if pd.notna(v)}
 
-        # Gộp vào extra
+        # Gộp vào extra (không còn xuất extra_raw trong Excel, nhưng DB vẫn giữ extra nếu có)
         extra = {}
         if promotion:
             extra["promotion"] = promotion
         if commission:
             extra["commission"] = commission
-
         base["extra"] = json.dumps(extra, ensure_ascii=False)
         
         if only_with_commission:
@@ -2004,6 +2057,25 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
             if not (eligible_flag or has_comm):
                 continue
 
+        # Auto-convert url -> affiliate_url if missing and a template is available
+        if (not base.get("affiliate_url")) and base.get("url") and base.get("merchant"):
+            try:
+                tpl = crud.get_affiliate_template(db, base["merchant"], "accesstrade")
+                if tpl:
+                    merged_params: dict[str, str] = {}
+                    if tpl.default_params:
+                        merged_params.update(tpl.default_params)
+                    # apply template: replace {target} and any params
+                    aff = tpl.template.replace("{target}", quote_plus(base["url"]))
+                    for k, v in merged_params.items():
+                        aff = aff.replace("{"+k+"}", str(v))
+                    base["affiliate_url"] = aff
+            except Exception:
+                pass
+
+        # Set affiliate_link_available by presence of affiliate_url
+        base["affiliate_link_available"] = bool(base.get("affiliate_url"))
+
         data = schemas.ProductOfferCreate(**base)
 
         if not data.url or not data.source_id:
@@ -2020,14 +2092,25 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         crud.upsert_offer_by_source(db, data)
         imported += 1
 
+    if required_errors:
+        # Trả thông tin thống kê để người dùng biết lý do bỏ qua
+        return {
+            "ok": True,
+            "imported": imported,
+            "skipped_required": skipped_required,
+            "errors": required_errors[:50]  # tránh trả quá dài
+        }
     return {"ok": True, "imported": imported}
 
 # --- Export sản phẩm từ DB ra file Excel ---
 @app.get(
     "/offers/export-excel",
     tags=["Offers 🛒"],
-    summary="Xuất sản phẩm ra Excel",
-    description="Xuất sản phẩm trong DB ra file Excel. Có thể lọc theo merchant, title (tương đối), skip, limit."
+    summary="Xuất Excel chuyên biệt (Products/Campaigns/Commissions/Promotions)",
+    description=(
+        "Xuất Excel gồm 4 sheet độc lập. Products chỉ gồm sản phẩm từ API (datafeeds/top_products) và có cột source_type; "
+        "Campaigns chỉ các campaign đã APPROVED/SUCCESSFUL; Commissions/PROMotions độc lập, không phụ thuộc sản phẩm."
+    )
 )
 def export_offers_excel(
     merchant: str | None = None,
@@ -2036,41 +2119,38 @@ def export_offers_excel(
     limit: int = 0,  # nếu =0 thì xuất toàn bộ
     db: Session = Depends(get_db)
 ):
-    # Lấy query gốc
-    query = db.query(models.ProductOffer)
-
-    # Lọc theo merchant nếu có
-    if merchant:
-        query = query.filter(models.ProductOffer.merchant == merchant.lower())
-
-    # Lọc theo title tương đối (LIKE) nếu có
-    if title:
-        like_pattern = f"%{title.lower()}%"
-        query = query.filter(models.ProductOffer.title.ilike(like_pattern))
-
-    # Skip + limit
-    if skip:
-        query = query.offset(skip)
-    if limit:
-        query = query.limit(limit)
-
-    offers = query.all()
-    # Prefetch map/group từ các bảng chuẩn hoá để join nhanh theo campaign_id
-    from collections import defaultdict
-    campaign_map = {c.campaign_id: c for c in db.query(models.Campaign).all()}
-
-    commissions_by_cid = defaultdict(list)
-    for cp in db.query(models.CommissionPolicy).all():
-        commissions_by_cid[cp.campaign_id].append(cp)
-
-    promotions_by_cid = defaultdict(list)
-    for pr in db.query(models.Promotion).all():
-        promotions_by_cid[pr.campaign_id].append(pr)
-
-    # === JSONL: đọc log API để gán API_EMPTY / API_MISSING ===
     import os, json
-    LOG_DIR = os.getenv("API_LOG_DIR", "./logs")
+    import pandas as pd
+    from collections import defaultdict
 
+    # 1) Products: chỉ lấy offers từ nguồn API (datafeeds/top_products)
+    q_offers = db.query(models.ProductOffer).filter(
+        models.ProductOffer.source_type.in_(["datafeeds", "top_products", "promotions", "manual", "excel"])  # mở rộng theo yêu cầu
+    )
+    if merchant:
+        q_offers = q_offers.filter(models.ProductOffer.merchant == merchant.lower())
+    if title:
+        q_offers = q_offers.filter(models.ProductOffer.title.ilike(f"%{title.lower()}%"))
+    if skip:
+        q_offers = q_offers.offset(skip)
+    if limit:
+        q_offers = q_offers.limit(limit)
+    offers = q_offers.all()
+
+    # 2) Campaigns: độc lập, chỉ APPROVED/SUCCESSFUL
+    campaigns_all = db.query(models.Campaign).filter(
+        (models.Campaign.user_registration_status.in_(["APPROVED", "SUCCESSFUL"]))
+    ).all()
+    campaign_map = {c.campaign_id: c for c in campaigns_all}
+
+    # 3) Commissions: độc lập, lấy từ bảng CommissionPolicy
+    commissions_all = db.query(models.CommissionPolicy).all()
+
+    # 4) Promotions: độc lập, lấy từ bảng Promotion (kèm merchant từ campaign nếu có)
+    promotions_all = db.query(models.Promotion).all()
+
+    # 5) Đọc JSONL logs để enrich Campaign fields (giống trước đây)
+    LOG_DIR = os.getenv("API_LOG_DIR", "./logs")
     def _read_jsonl(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -2082,48 +2162,22 @@ def export_offers_excel(
         except FileNotFoundError:
             return
 
-    # Commissions theo campaign_id
-    COMM_POLLED, COMM_EMPTY = set(), set()
-    for rec in _read_jsonl(os.path.join(LOG_DIR, "commission_policies.jsonl")) or []:
-        cid = str(rec.get("campaign_id") or "")
-        if not cid:
-            continue
-        COMM_POLLED.add(cid)
-        if int(rec.get("items_count") or 0) == 0:
-            COMM_EMPTY.add(cid)
-
-    # Promotions theo merchant (viết thường)
-    PROMO_POLLED, PROMO_EMPTY = set(), set()
-    for rec in _read_jsonl(os.path.join(LOG_DIR, "promotions.jsonl")) or []:
-        m = (rec.get("merchant") or "").lower()
-        if not m:
-            continue
-        PROMO_POLLED.add(m)
-        if int(rec.get("items_count") or 0) == 0:
-            PROMO_EMPTY.add(m)
-
-    # Campaign detail: giữ bản ghi cuối theo campaign_id
     CAMP_LAST = {}
     for rec in _read_jsonl(os.path.join(LOG_DIR, "campaign_detail.jsonl")) or []:
         cid = str(rec.get("campaign_id") or "")
         if cid:
-            CAMP_LAST[cid] = rec  # overwrite để lấy bản mới nhất
+            CAMP_LAST[cid] = rec
 
     def _campaign_field_from_log(cid: str, field_name: str):
         rec = CAMP_LAST.get(str(cid) if cid is not None else "")
         if not rec:
             return "API_MISSING"
-
-        # 1) Hỗ trợ log rút gọn (boolean flags)
         if field_name == "end_time" and rec.get("has_end_time") is False:
             return "API_EMPTY"
         if field_name == "user_registration_status" and rec.get("has_user_status") is False:
             return "API_EMPTY"
-
-        # 2) Hỗ trợ log dạng đầy đủ (raw JSON)
         if rec.get("empty") is True:
             return "API_EMPTY"
-
         raw = rec.get("raw")
         if isinstance(raw, dict):
             data = None
@@ -2141,17 +2195,24 @@ def export_offers_excel(
                     return "API_EMPTY"
                 v = data.get(field_name, None)
                 return v if v not in (None, "", []) else "API_EMPTY"
-
-        # 3) Không có raw và cũng không có cờ → coi như chưa ghi log đúng chuẩn
         return "API_MISSING"
 
-    rows = []
+    # ---------------------------
+    # Build Products rows
+    # ---------------------------
+    df_products_rows = []
     for o in offers:
-
-        base = {
+        extra = {}
+        if o.extra:
+            try:
+                extra = json.loads(o.extra)
+            except Exception:
+                extra = {}
+        df_products_rows.append({
             "id": o.id,
             "source": o.source,
             "source_id": o.source_id,
+            "source_type": o.source_type,
             "merchant": o.merchant,
             "title": o.title,
             "url": o.url,
@@ -2160,115 +2221,36 @@ def export_offers_excel(
             "price": o.price,
             "currency": o.currency,
             "campaign_id": o.campaign_id,
-            "updated_at": o.updated_at.isoformat() if o.updated_at else None,
-        }
-        # Parse extra nếu có
-        extra = {}
-        if o.extra:
-            try:
-                extra = json.loads(o.extra)
-            except Exception:
-                extra = {"extra_raw": o.extra}
-
-        # NEW: Enrich theo campaign_id (nếu có) — giữ Products gọn,
-        # không dàn tràn campaign/commission/promotion vào base ở đây.
-        cid = str(o.campaign_id or "")
-        # (Các sheet Campaigns/Commissions/Promotions sẽ xử lý bên dưới)
-
-        # Tách thêm các trường lặp từ extra (nếu có)
-        base["desc"] = extra.get("desc")
-        base["cate"] = extra.get("cate")
-        base["shop_name"] = extra.get("shop_name")
-        # Ưu tiên 'update_time_raw' (key chuẩn mới), fallback 'update_time' để tương thích
-        base["update_time_raw"] = extra.get("update_time_raw") or extra.get("update_time")
-
-        # Luôn giữ full extra raw để không mất thông tin
-        base["extra_raw"] = json.dumps(extra, ensure_ascii=False)
-
-        rows.append(base)
-
-    if not rows:
-        raise HTTPException(status_code=404, detail="Không có sản phẩm nào phù hợp trong DB")
-
-    # Xuất ra Excel
-# ĐOẠN MỚI (thay thế toàn bộ khối export 1 sheet thành 4 sheet)
-
-    # ---------------------------
-    # TẠO 4 SHEET ĐỒNG BỘ THỨ TỰ
-    # ---------------------------
-    import pandas as pd
-
-    df_products_rows = []
-    df_campaigns_rows = []
-    df_commissions_rows = []
-    df_promotions_rows = []
-
-    for base in rows:
-        # Tách extra trước để dùng cho Products row
-        try:
-            extra = json.loads(base.get("extra_raw", "{}")) if base.get("extra_raw") else {}
-        except Exception:
-            extra = {}
-
-        # base có: id, source, source_id, merchant, title, url, affiliate_url, image_url,
-        # price, currency, campaign_id, updated_at, desc, cate, shop_name, update_time_raw,
-        # extra_raw (full JSON)
-        # -> Products: giữ gọn + bổ sung một số trường datafeeds có trong API (nếu có trong extra)
-        prod_row = {
-            "id": base.get("id"),
-            "source": base.get("source"),
-            "source_id": base.get("source_id"),
-            "merchant": base.get("merchant"),
-            "title": base.get("title"),
-            "url": base.get("url"),
-            "affiliate_url": base.get("affiliate_url"),
-            "image_url": base.get("image_url"),
-            "price": base.get("price"),
-            "currency": base.get("currency"),
-            "campaign_id": base.get("campaign_id"),
-            "product_id": extra.get("product_id") or base.get("product_id"),
+            "product_id": json.dumps(extra.get("product_id")) if False else (extra.get("product_id") or getattr(o, "product_id", None)),
             "affiliate_link_available": extra.get("affiliate_link_available"),
-            # Bổ sung trường từ datafeeds nếu có
             "domain": extra.get("domain"),
             "sku": extra.get("sku"),
             "discount": extra.get("discount"),
             "discount_amount": extra.get("discount_amount"),
             "discount_rate": extra.get("discount_rate"),
             "status_discount": extra.get("status_discount"),
-            "updated_at": base.get("updated_at"),
-            # Một số trường extra tiện tra cứu
-            "desc": base.get("desc"),
-            "cate": base.get("cate"),
-            "shop_name": base.get("shop_name"),
-            "update_time_raw": base.get("update_time_raw"),
-            "extra_raw": base.get("extra_raw"),
-        }
-        df_products_rows.append(prod_row)
+            "updated_at": o.updated_at.isoformat() if o.updated_at else None,
+            "desc": extra.get("desc"),
+            "cate": extra.get("cate"),
+            "shop_name": extra.get("shop_name"),
+            "update_time_raw": extra.get("update_time_raw") or extra.get("update_time"),
+        })
 
-
-        # --- Campaigns sheet (join từ bảng Campaign)
-        cid = str(base.get("campaign_id") or "") if base.get("campaign_id") is not None else ""
-        c = campaign_map.get(cid)
-
-        # Nếu DB có giá trị thì dùng; nếu trống → tra log để gán API_EMPTY / API_MISSING
-        user_val = (c.user_registration_status if c else None)
-        end_val = (c.end_time if c else None)
-        if user_val in (None, "", []):
-            user_val = _campaign_field_from_log(cid, "user_registration_status")
-        if end_val in (None, "", []):
-            end_val = _campaign_field_from_log(cid, "end_time")
-
-        camp_row = {
-            "product_id": base.get("id"),
-            "merchant": base.get("merchant"),
-            "campaign_id": cid,
-            "campaign_name": (c.name if c else None),
-            "approval_type": (c.approval if c else None),
-            "user_status": user_val,  # NOT_REGISTERED/PENDING/APPROVED hoặc API_EMPTY/API_MISSING
-            "status": (c.status if c else _campaign_field_from_log(cid, "status")),
-            "start_time": (c.start_time if c else None),
-            "end_time": end_val,      # yyyy-mm-dd hoặc API_EMPTY/API_MISSING
-            # Bổ sung các trường từ API campaigns nếu log có
+    # ---------------------------
+    # Build Campaigns rows (independent)
+    # ---------------------------
+    df_campaigns_rows = []
+    for c in campaigns_all:
+        cid = c.campaign_id
+        df_campaigns_rows.append({
+            "campaign_id": c.campaign_id,
+            "merchant": c.merchant,
+            "campaign_name": c.name,
+            "approval_type": c.approval,
+            "user_status": c.user_registration_status,
+            "status": c.status or _campaign_field_from_log(cid, "status"),
+            "start_time": c.start_time,
+            "end_time": c.end_time if c.end_time else _campaign_field_from_log(cid, "end_time"),
             "category": _campaign_field_from_log(cid, "category"),
             "conversion_policy": _campaign_field_from_log(cid, "conversion_policy"),
             "cookie_duration": _campaign_field_from_log(cid, "cookie_duration"),
@@ -2278,69 +2260,39 @@ def export_offers_excel(
             "sub_category": _campaign_field_from_log(cid, "sub_category"),
             "type": _campaign_field_from_log(cid, "type"),
             "campaign_url": _campaign_field_from_log(cid, "url"),
-        }
+        })
 
-        df_campaigns_rows.append(camp_row)
+    # ---------------------------
+    # Build Commissions rows (independent)
+    # ---------------------------
+    df_commissions_rows = []
+    for cp in commissions_all:
+        df_commissions_rows.append({
+            "campaign_id": cp.campaign_id,
+            "reward_type": cp.reward_type,
+            "sales_ratio": cp.sales_ratio,
+            "sales_price": cp.sales_price,
+            "target_month": cp.target_month,
+        })
 
-        # --- Commissions sheet (join từ bảng CommissionPolicy, gom nhiều chính sách về 1 hàng)
-        cid = str(base.get("campaign_id") or "") if base.get("campaign_id") is not None else ""
-        pols = commissions_by_cid.get(cid, [])
-        def _join(vals): 
-            vals = [str(v) for v in vals if v not in (None, "")]
-            return "; ".join(sorted(set(vals))) if vals else None
-
-        if pols:
-            df_commissions_rows.append({
-                "product_id": base.get("id"),
-                "sales_ratio": _join([p.sales_ratio for p in pols]),
-                "sales_price": _join([p.sales_price for p in pols]),
-                "reward_type": _join([p.reward_type for p in pols]),
-                "target_month": _join([p.target_month for p in pols]),
-            })
-        else:
-            # Không có policy trong DB → tra log theo campaign_id để gắn nhãn
-            tag = "API_EMPTY" if cid in COMM_EMPTY else ("API_MISSING" if (cid and cid not in COMM_POLLED) else "API_EMPTY")
-            df_commissions_rows.append({
-                "product_id": base.get("id"),
-                "sales_ratio": None,
-                "sales_price": None,
-                "reward_type": tag,
-                "target_month": None,
-            })
-
-        # --- Promotions sheet (join từ bảng Promotion, có thể nhiều khuyến mãi -> gộp)
-        cid = str(base.get("campaign_id") or "") if base.get("campaign_id") is not None else ""
-        pr_list = promotions_by_cid.get(cid, [])
-
-        def _join_prom(vals):
-            vals = [str(v) for v in vals if v not in (None, "")]
-            return "; ".join(sorted(set(vals))) if vals else None
-
-        if pr_list:
-            df_promotions_rows.append({
-                "product_id": base.get("id"),
-                "promotion_name": _join_prom([p.name for p in pr_list]),
-                "promotion_content": _join_prom([p.content for p in pr_list]),
-                "promotion_start_time": _join_prom([p.start_time for p in pr_list]),
-                "promotion_end_time": _join_prom([p.end_time for p in pr_list]),
-                "promotion_coupon": _join_prom([p.coupon for p in pr_list]),
-                "promotion_link": _join_prom([p.link for p in pr_list]),
-            })
-        else:
-            # Không có promotion trong DB → tra log theo merchant để gắn nhãn
-            mkey = (base.get("merchant") or "").lower()
-            if not mkey and cid and cid in campaign_map:
-                mkey = (getattr(campaign_map[cid], "merchant", "") or "").lower()
-            tag = "API_EMPTY" if (mkey in PROMO_EMPTY) else ("API_MISSING" if (mkey and mkey not in PROMO_POLLED) else "API_EMPTY")
-            df_promotions_rows.append({
-                "product_id": base.get("id"),
-                "promotion_name": tag,
-                "promotion_content": None,
-                "promotion_start_time": None,
-                "promotion_end_time": None,
-                "promotion_coupon": None,
-                "promotion_link": None,
-            })
+    # ---------------------------
+    # Build Promotions rows (independent + merchant)
+    # ---------------------------
+    df_promotions_rows = []
+    for pr in promotions_all:
+        m = None
+        if pr.campaign_id and pr.campaign_id in campaign_map:
+            m = campaign_map[pr.campaign_id].merchant
+        df_promotions_rows.append({
+            "campaign_id": pr.campaign_id,
+            "merchant": m,
+            "name": pr.name,
+            "content": pr.content,
+            "start_time": pr.start_time,
+            "end_time": pr.end_time,
+            "coupon": pr.coupon,
+            "link": pr.link,
+        })
 
     # DataFrames
     df_products = pd.DataFrame(df_products_rows)
@@ -2348,26 +2300,20 @@ def export_offers_excel(
     df_commissions = pd.DataFrame(df_commissions_rows)
     df_promotions = pd.DataFrame(df_promotions_rows)
 
-    # Keep sheet column names matching API-normalized fields.
-    # Also insert a Vietnamese human-readable header row as the first row of each sheet
-    # so exported files are easy to read for Vietnamese users while remaining machine-readable.
-
-    # Hàng dịch nghĩa (tiếng Việt) cho từng sheet (giữ lại như yêu cầu)
+    # Header translations (Vietnamese) — add (*) markers for required in Products
     trans_products = {
-        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "merchant": "Nhà bán",
-        "title": "Tên sản phẩm", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
-        "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
+        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)", "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm", "price": "Giá (*)", "currency": "Tiền tệ",
         "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
         "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
         "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
         "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
         "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
-        "extra_raw": "Extra gốc",
     }
     trans_campaigns = {
-        "product_id": "ID sản phẩm", "merchant": "Nhà bán",
-        "campaign_id": "Mã chiến dịch", "campaign_name": "Tên chiến dịch", "approval_type": "Approval", "user_status": "Trạng thái của tôi",
-        "status": "Tình trạng",
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "campaign_name": "Tên chiến dịch",
+        "approval_type": "Approval", "user_status": "Trạng thái của tôi", "status": "Tình trạng",
         "start_time": "Bắt đầu", "end_time": "Kết thúc",
         "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
         "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
@@ -2375,18 +2321,20 @@ def export_offers_excel(
         "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
-        "product_id": "ID sản phẩm", "sales_ratio": "Tỷ lệ (%)",
-        "sales_price": "Hoa hồng cố định", "reward_type": "Kiểu thưởng", "target_month": "Tháng áp dụng",
+        "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
+        "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
     }
     trans_promotions = {
-        "product_id": "ID sản phẩm", "promotion_name": "Tên khuyến mãi", "promotion_content": "Nội dung",
-        "promotion_start_time": "Bắt đầu KM", "promotion_end_time": "Kết thúc KM",
-        "promotion_coupon": "Mã giảm", "promotion_link": "Link khuyến mãi",
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
+        "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
     }
 
     def _with_header(df, trans):
+        # Luôn tạo một hàng tiêu đề TV làm hàng đầu tiên
+        # Nếu df đang rỗng, tạo hàng đầu với toàn bộ cột theo trans
         if df.empty:
-            return df
+            header = {c: trans.get(c, c) for c in trans.keys()}
+            return pd.DataFrame([header])
         header = {c: trans.get(c, c) for c in df.columns}
         return pd.concat([pd.DataFrame([header]), df], ignore_index=True)
 
@@ -2395,16 +2343,116 @@ def export_offers_excel(
     df_commissions = _with_header(df_commissions, trans_commissions)
     df_promotions = _with_header(df_promotions, trans_promotions)
 
-    # Ghi 4 sheet
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        # Nếu DataFrame rỗng, vẫn cần tạo cột theo trans để sheet có header
+        def _ensure_cols(df, trans_map):
+            cols = list(trans_map.keys())
+            if df.empty:
+                return pd.DataFrame(columns=cols)
+            # Reorder/align columns to match trans_map keys; include missing columns as empty
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = None
+            return df[cols]
+
+        df_products = _ensure_cols(df_products, trans_products)
+        df_campaigns = _ensure_cols(df_campaigns, trans_campaigns)
+        df_commissions = _ensure_cols(df_commissions, trans_commissions)
+        df_promotions = _ensure_cols(df_promotions, trans_promotions)
+
+        df_products.to_excel(writer, sheet_name="Products", index=False)
+        df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
+        df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
+        df_promotions.to_excel(writer, sheet_name="Promotions", index=False)
+
+        # Style the Vietnamese header row (row index 1) as bold + italic
+        workbook = writer.book
+        fmt_vi_header = workbook.add_format({"bold": True, "italic": True})
+        for sheet_name in ("Products", "Campaigns", "Commissions", "Promotions"):
+            ws = writer.sheets.get(sheet_name)
+            if ws is not None:
+                try:
+                    ws.set_row(1, None, fmt_vi_header)
+                except Exception:
+                    pass
+    output.seek(0)
+
+    filename = f"offers_export_{int(time.time())}.xlsx"
+    headers = {"Content-Disposition": f"attachment; filename={filename}"}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers
+    )
+
+@app.get(
+    "/offers/export-template",
+    tags=["Offers 🛒"],
+    summary="Tải template Excel (4 sheet)",
+    description="Tải file mẫu có sẵn 4 sheet với header 2 hàng; đánh dấu (*) ở các cột bắt buộc của Products."
+)
+def export_excel_template():
+    import pandas as pd
+    # Tạo DataFrames rỗng với đúng cột và chèn hàng tiêu đề TV
+    trans_products = {
+        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)", "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm", "price": "Giá (*)", "currency": "Tiền tệ",
+        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
+        "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+    }
+    trans_campaigns = {
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "campaign_name": "Tên chiến dịch",
+        "approval_type": "Approval", "user_status": "Trạng thái của tôi", "status": "Tình trạng",
+        "start_time": "Bắt đầu", "end_time": "Kết thúc",
+        "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
+        "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
+        "description": "Mô tả", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+        "type": "Loại", "campaign_url": "URL chiến dịch",
+    }
+    trans_commissions = {
+        "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
+        "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
+    }
+    trans_promotions = {
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
+        "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
+    }
+
+    def _df_with_header(cols_map):
+        df = pd.DataFrame(columns=list(cols_map.keys()))
+        header = {c: cols_map.get(c, c) for c in df.columns}
+        return pd.concat([pd.DataFrame([header]), df], ignore_index=True)
+
+    df_products = _df_with_header(trans_products)
+    df_campaigns = _df_with_header(trans_campaigns)
+    df_commissions = _df_with_header(trans_commissions)
+    df_promotions = _df_with_header(trans_promotions)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df_products.to_excel(writer, sheet_name="Products", index=False)
         df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
         df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
         df_promotions.to_excel(writer, sheet_name="Promotions", index=False)
+
+        # Style the Vietnamese header row (row index 1) as bold + italic
+        workbook = writer.book
+        fmt_vi_header = workbook.add_format({"bold": True, "italic": True})
+        for sheet_name in ("Products", "Campaigns", "Commissions", "Promotions"):
+            ws = writer.sheets.get(sheet_name)
+            if ws is not None:
+                try:
+                    ws.set_row(1, None, fmt_vi_header)
+                except Exception:
+                    pass
     output.seek(0)
 
-    filename = f"offers_export_{int(time.time())}.xlsx"
+    filename = f"offers_template_{int(time.time())}.xlsx"
     headers = {"Content-Disposition": f"attachment; filename={filename}"}
     return StreamingResponse(
         output,
