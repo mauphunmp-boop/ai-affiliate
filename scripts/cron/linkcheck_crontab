@@ -1,0 +1,9 @@
+## Rotation plan: 1/24 mỗi lần (mặc định), kiểm tra không xoá theo giờ; 03:05 bulk xoá đủ 24 lát
+# Thiết lập hệ số lát: đặt qua API Settings một lần: linkcheck_mod=24
+# Lịch chạy lát kiểm tra: mỗi giờ 1 lần (00:00, 01:00, …, 23:00)
+0 * * * * API_BASE="http://localhost:8000" /bin/bash -lc \
+  "DELETE_DEAD=0 /workspaces/ai-affiliate/scripts/cron/run_linkcheck.sh >> /var/log/linkcheck.log 2>&1"
+
+# 03:05 AM — Bulk xoá 24 lát (gọi 24 lần có delete)
+5 3 * * * API_BASE="http://localhost:8000" /bin/bash -lc \
+  "COUNT=24 DELETE_DEAD=1 /workspaces/ai-affiliate/scripts/cron/run_linkcheck_bulk.sh >> /var/log/linkcheck.log 2>&1"

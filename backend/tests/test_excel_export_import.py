@@ -241,3 +241,46 @@ def test_import_auto_convert_affiliate_url(client, tmp_path):
     items = resp.json()
     assert any(it.get("merchant") == "tikivn" and it.get("title") == "Sản phẩm C" and it.get("affiliate_url") for it in items)
     assert any(it.get("merchant") == "tikivn" and it.get("title") == "Sản phẩm C" and it.get("affiliate_link_available") is True for it in items)
+
+
+def test_export_campaigns_includes_case_variants_and_is_stable(client):
+    # Seed variants of user_registration_status with different case/whitespace
+    TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
+    with TestingSessionLocal() as db:
+        crud.upsert_campaign(db, schemas.CampaignCreate(
+            campaign_id="CAMP_A",
+            merchant="shopa",
+            name="Shop A",
+            status="running",
+            user_registration_status="approved"  # lower-case
+        ))
+        crud.upsert_campaign(db, schemas.CampaignCreate(
+            campaign_id="CAMP_B",
+            merchant="shopb",
+            name="Shop B",
+            status="running",
+            user_registration_status="  APPROVED  "  # padded whitespace
+        ))
+        crud.upsert_campaign(db, schemas.CampaignCreate(
+            campaign_id="CAMP_C",
+            merchant="shopc",
+            name="Shop C",
+            status="paused",
+            user_registration_status="SUCCESSFUL"  # treated as APPROVED
+        ))
+
+    # Run export twice and ensure Campaigns sheet consistently includes all 3
+    def _get_campaign_ids_from_export():
+        r = client.get("/offers/export-excel")
+        assert r.status_code == 200
+        import io, pandas as pd
+        xls = pd.ExcelFile(io.BytesIO(r.content))
+        dfc = xls.parse("Campaigns", skiprows=[1])
+        return sorted(list(dfc["campaign_id"].astype(str)))
+
+    ids1 = _get_campaign_ids_from_export()
+    ids2 = _get_campaign_ids_from_export()
+    # Should contain the seeded campaign IDs
+    assert set(["CAMP_A", "CAMP_B", "CAMP_C"]).issubset(set(ids1))
+    # Deterministic across runs
+    assert ids1 == ids2

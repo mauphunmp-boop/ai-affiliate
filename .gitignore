@@ -17,6 +17,11 @@ dist/
 .vite/
 *.log
 
+# --- Logs and JSONL traces
+backend/logs/
+logs/
+*.jsonl
+
 # --- OS/IDE
 .DS_Store
 Thumbs.db

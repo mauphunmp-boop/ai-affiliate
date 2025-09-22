@@ -91,6 +91,8 @@ def get_policy_flags(db: Session) -> dict:
         "only_with_commission": "only_with_commission=true" in s,
         "check_urls": "check_urls=true" in s,
         "linkcheck_cursor": 0,
+        "linkcheck_mod": 10,
+        "linkcheck_limit": None,
     }
     # Đọc cursor nếu có
     import re
@@ -100,6 +102,18 @@ def get_policy_flags(db: Session) -> dict:
             flags["linkcheck_cursor"] = int(m.group(1))
         except Exception:
             flags["linkcheck_cursor"] = 0
+    m = re.search(r"linkcheck_mod=(\d+)", s)
+    if m:
+        try:
+            flags["linkcheck_mod"] = max(1, int(m.group(1)))
+        except Exception:
+            flags["linkcheck_mod"] = 10
+    m = re.search(r"linkcheck_limit=(\d+)", s)
+    if m:
+        try:
+            flags["linkcheck_limit"] = max(1, int(m.group(1)))
+        except Exception:
+            flags["linkcheck_limit"] = None
     return flags
 
 
@@ -308,11 +322,23 @@ def upsert_campaign(db: Session, data: "schemas.CampaignCreate"):
     if obj:
         # cập nhật các trường có giá trị
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+        # Chuẩn hoá trạng thái user_registration_status theo chuẩn mới (SUCCESSFUL -> APPROVED; uppercase, trim)
+        if "user_registration_status" in payload and payload["user_registration_status"] is not None:
+            us = str(payload["user_registration_status"]).strip().upper()
+            if us == "SUCCESSFUL":
+                us = "APPROVED"
+            payload["user_registration_status"] = us
         for k, v in payload.items():
             setattr(obj, k, v)
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
     payload = data.model_dump() if hasattr(data, "model_dump") else data.dict()
+    # Chuẩn hoá khi tạo mới
+    if "user_registration_status" in payload and payload["user_registration_status"] is not None:
+        us = str(payload["user_registration_status"]).strip().upper()
+        if us == "SUCCESSFUL":
+            us = "APPROVED"
+        payload["user_registration_status"] = us
     obj = models.Campaign(**payload)
     db.add(obj); db.commit(); db.refresh(obj)
     return obj

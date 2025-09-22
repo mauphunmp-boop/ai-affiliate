@@ -1,11 +1,10 @@
-# backend/main.py
 import logging
 import traceback
 import os, hmac, hashlib, base64, json, time, asyncio
 from urllib.parse import urlparse, quote_plus
 from typing import Optional, Dict, List, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from providers import ProviderRegistry, ProviderOps
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -13,7 +12,7 @@ import io
 from fastapi.exceptions import RequestValidationError
 
 from sqlalchemy.orm import Session
-from sqlalchemy import text, or_, and_
+from sqlalchemy import text, or_, and_, func
 
 from ai_service import suggest_products_with_config
 import models, schemas, crud
@@ -24,8 +23,37 @@ from accesstrade_service import (
     fetch_campaign_detail, fetch_commission_policies  # NEW
 )
 
-# FastAPI application instance
-app = FastAPI()
+# FastAPI application instance with organized Swagger tags and VN docs
+tags_metadata = [
+    {"name": "System 🛠️", "description": "Các API kiểm tra sức khỏe hệ thống và vận hành."},
+    {"name": "Links 🔗", "description": "Quản lý link tiếp thị (CRUD)."},
+    {"name": "API Configs ⚙️", "description": "Cấu hình nhà cung cấp AI/API (ví dụ: Accesstrade, mô hình AI)."},
+    {"name": "Settings ⚙️", "description": "Cài đặt/policy hệ thống: cấu hình ingest, bật/tắt kiểm tra link khi import Excel."},
+    {"name": "Affiliate 🎯", "description": "Mẫu deeplink, chuyển đổi link gốc → deeplink, shortlink an toàn."},
+    {"name": "Campaigns 📢", "description": "Chiến dịch: danh sách, summary, merchants đã duyệt."},
+    {"name": "Offers 🛒", "description": "Sản phẩm/offer: liệt kê, cập nhật, xoá, import Excel, kiểm tra link sống."},
+    {"name": "Ingest 🌐", "description": "Đồng bộ dữ liệu từ nhà cung cấp (Accesstrade): campaigns, datafeeds, promotions, top products."},
+    {"name": "AI 🤖", "description": "Các tính năng AI: gợi ý sản phẩm và kiểm tra nhanh."},
+]
+
+app = FastAPI(
+    title="AI Affiliate API",
+    description=(
+        "Bộ API quản lý affiliate: chiến dịch, sản phẩm, deeplink và ingest từ Accesstrade.\n\n"
+        "Hướng dẫn chung:\n"
+        "- Các nhóm API được sắp xếp theo chức năng để dễ tìm.\n"
+        "- Các ví dụ đi kèm (Example) bằng tiếng Việt ngay trong schema request.\n"
+        "- Khi cần demo nhanh, bật biến môi trường AT_MOCK=1 để dùng dữ liệu giả lập.\n"
+    ),
+    version="0.1.0",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={
+        "docExpansion": "list",                # mở rộng theo danh sách, gọn hơn
+        "defaultModelsExpandDepth": -1,         # thu gọn mục Schemas mặc định
+        "defaultModelExpandDepth": 0,           # không auto mở từng schema
+        "displayRequestDuration": True,
+    },
+)
 
 # CORS (open by default; tighten in production)
 app.add_middleware(
@@ -43,6 +71,24 @@ if not logger.handlers:
 
 # --- DB init: create tables on import (no Alembic here) ---
 Base.metadata.create_all(bind=engine)
+
+# Thiết lập mặc định cho policy link-check nếu chưa có trong DB
+def _ensure_default_policy_flags():
+    db = SessionLocal()
+    try:
+        cfg = crud.get_api_config(db, "ingest_policy")
+        s = (cfg.model or "") if cfg else ""
+        # Chỉ đặt nếu CHƯA có trong chuỗi model
+        if "linkcheck_mod=" not in (s or ""):
+            crud.set_policy_flag(db, "linkcheck_mod", 24)
+        if "linkcheck_limit=" not in (s or ""):
+            crud.set_policy_flag(db, "linkcheck_limit", 1000)
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+_ensure_default_policy_flags()
 
 # DB session dependency
 def get_db():
@@ -75,7 +121,10 @@ async def all_exception_handler(request: Request, exc: Exception):
     "/health",
     tags=["System 🛠️"],
     summary="Kiểm tra sức khỏe hệ thống",
-    description="Thực hiện truy vấn SQL đơn giản để kiểm tra kết nối DB và tình trạng dịch vụ."
+    description=(
+        "Trả về ok=true nếu kết nối DB hoạt động.\n\n"
+        "Ví dụ: gọi GET /health → {\"ok\": true}"
+    )
 )
 def health(db: Session = Depends(get_db)):
     try:
@@ -160,10 +209,31 @@ def read_link(link_id: int, db: Session = Depends(get_db)):
     "/links",
     tags=["Links 🔗"],
     summary="Thêm link mới",
-    description="Tạo mới một link tiếp thị và lưu vào DB.",
+    description=(
+        "Tạo mới một link tiếp thị và lưu vào DB.\n\n"
+        "- Bắt buộc: name, url, affiliate_url.\n"
+        "- Tuỳ chọn: (không có).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"name\": \"Link Shopee điện thoại\",\n  \"url\": \"https://shopee.vn/product/123\",\n  \"affiliate_url\": \"https://go.example/?url=https%3A%2F%2Fshopee.vn%2Fproduct%2F123\"\n}"
+    ),
     response_model=schemas.AffiliateLinkOut
 )
-def create_link(link: schemas.AffiliateLinkCreate, db: Session = Depends(get_db)):
+def create_link(
+    link: schemas.AffiliateLinkCreate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Link Shopee",
+                "value": {
+                    "name": "Link Shopee điện thoại",
+                    "url": "https://shopee.vn/product/123",
+                    "affiliate_url": "https://go.example/?url=https%3A%2F%2Fshopee.vn%2Fproduct%2F123"
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     logger.debug("Create link payload: %s", link.model_dump() if hasattr(link, "model_dump") else link.dict())
     return crud.create_link(db, link)
 
@@ -171,10 +241,32 @@ def create_link(link: schemas.AffiliateLinkCreate, db: Session = Depends(get_db)
     "/links/{link_id}",
     tags=["Links 🔗"],
     summary="Cập nhật link",
-    description="Cập nhật thông tin một link tiếp thị theo **ID**.",
+    description=(
+        "Cập nhật thông tin một link tiếp thị theo **ID**.\n\n"
+        "- Bắt buộc: name, url, affiliate_url (hiện schema yêu cầu đủ 3 trường).\n"
+        "- Tuỳ chọn: (không có).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"name\": \"Link Shopee A\",\n  \"url\": \"https://shopee.vn/product/123\",\n  \"affiliate_url\": \"https://go.example/?url=...\"\n}"
+    ),
     response_model=schemas.AffiliateLinkOut
 )
-def update_link(link_id: int, link: schemas.AffiliateLinkUpdate, db: Session = Depends(get_db)):
+def update_link(
+    link_id: int,
+    link: schemas.AffiliateLinkUpdate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Cập nhật đủ trường",
+                "value": {
+                    "name": "Link Shopee A",
+                    "url": "https://shopee.vn/product/123",
+                    "affiliate_url": "https://go.example/?url=..."
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     db_link = crud.update_link(db, link_id, link)
     if db_link is None:
         raise HTTPException(status_code=404, detail="Link not found")
@@ -208,10 +300,32 @@ def read_api_configs(db: Session = Depends(get_db)):
     "/api-configs/upsert",
     tags=["API Configs ⚙️"],
     summary="Upsert cấu hình API",
-    description="**Tạo mới hoặc cập nhật** cấu hình dựa trên `name`. Thuận tiện để cập nhật nhanh.",
+    description=(
+        "**Tạo mới hoặc cập nhật** cấu hình dựa trên `name`. Thuận tiện để cập nhật nhanh.\n\n"
+        "- Bắt buộc: name, base_url, api_key.\n"
+        "- Tuỳ chọn: model (chuỗi lưu trữ flags/tuỳ biến).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"name\": \"accesstrade\",\n  \"base_url\": \"https://api.accesstrade.vn\",\n  \"api_key\": \"AT-XXXX\",\n  \"model\": \"only_with_commission=true\"\n}"
+    ),
     response_model=schemas.APIConfigOut
 )
-def upsert_api_config(config: schemas.APIConfigCreate, db: Session = Depends(get_db)):
+def upsert_api_config(
+    config: schemas.APIConfigCreate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Accesstrade",
+                "value": {
+                    "name": "accesstrade",
+                    "base_url": "https://api.accesstrade.vn",
+                    "api_key": "AT-XXXX",
+                    "model": "only_with_commission=true"
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     """Tạo mới hoặc cập nhật API config theo name."""
     return crud.upsert_api_config_by_name(db, config)
 
@@ -219,10 +333,33 @@ def upsert_api_config(config: schemas.APIConfigCreate, db: Session = Depends(get
     "/api-configs/{config_id}",
     tags=["API Configs ⚙️"],
     summary="Cập nhật cấu hình API",
-    description="Cập nhật thông tin cấu hình theo **ID**.",
+    description=(
+        "Cập nhật thông tin cấu hình theo **ID**.\n\n"
+        "- Bắt buộc: name, base_url, api_key.\n"
+        "- Tuỳ chọn: model.\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"name\": \"accesstrade\",\n  \"base_url\": \"https://api.accesstrade.vn\",\n  \"api_key\": \"AT-XXXX\",\n  \"model\": \"check_urls=true\"\n}"
+    ),
     response_model=schemas.APIConfigOut
 )
-def update_api_config(config_id: int, config: schemas.APIConfigCreate, db: Session = Depends(get_db)):
+def update_api_config(
+    config_id: int,
+    config: schemas.APIConfigCreate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Cập nhật khoá",
+                "value": {
+                    "name": "accesstrade",
+                    "base_url": "https://api.accesstrade.vn",
+                    "api_key": "AT-NEW-KEY",
+                    "model": "check_urls=true"
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     db_config = db.query(models.APIConfig).filter(models.APIConfig.id == config_id).first()
     if not db_config:
         raise HTTPException(status_code=404, detail="API config not found")
@@ -319,7 +456,10 @@ async def ai_test(
     "/aff/templates",
     tags=["Affiliate 🎯"],
     summary="Danh sách mẫu deeplink",
-    description="Hiển thị đầy đủ các mẫu deeplink hiện có trong DB.",
+    description=(
+        "Hiển thị đầy đủ các mẫu deeplink hiện có trong DB.\n\n"
+        "Gợi ý: cấu hình một mẫu cho mỗi cặp (merchant, network)."
+    ),
     response_model=list[schemas.AffiliateTemplateOut]
 )
 def list_templates(db: Session = Depends(get_db)):
@@ -329,10 +469,32 @@ def list_templates(db: Session = Depends(get_db)):
     "/aff/templates/upsert",
     tags=["Affiliate 🎯"],
     summary="Upsert mẫu deeplink",
-    description="Thêm/cập nhật mẫu deeplink cho từng **merchant** và **network**.",
+    description=(
+        "Thêm/cập nhật mẫu deeplink cho từng merchant/network.\n\n"
+        "- Bắt buộc: merchant, network, template.\n"
+        "- Tuỳ chọn: default_params (object), enabled (bool, mặc định true).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"merchant\": \"shopee\",\n  \"network\": \"accesstrade\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"my_subid\"}\n}"
+    ),
     response_model=schemas.AffiliateTemplateOut
 )
-def upsert_template(data: schemas.AffiliateTemplateCreate, db: Session = Depends(get_db)):
+def upsert_template(
+    data: schemas.AffiliateTemplateCreate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Mẫu Shopee",
+                "value": {
+                    "merchant": "shopee",
+                    "network": "accesstrade",
+                    "template": "https://go.example/?url={target}&sub1={sub1}",
+                    "default_params": {"sub1": "my_subid"}
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     tpl = crud.upsert_affiliate_template(db, data)
     return tpl
 
@@ -340,10 +502,34 @@ def upsert_template(data: schemas.AffiliateTemplateCreate, db: Session = Depends
     "/aff/templates/{template_id}",
     tags=["Affiliate 🎯"],
     summary="Cập nhật mẫu deeplink",
-    description="Sửa mẫu deeplink theo ID.",
+    description=(
+        "Sửa mẫu deeplink theo ID.\n\n"
+        "- Bắt buộc: merchant, network, template.\n"
+        "- Tuỳ chọn: default_params, enabled.\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"merchant\": \"lazada\",\n  \"network\": \"accesstrade\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"ads2025\"},\n  \"enabled\": true\n}"
+    ),
     response_model=schemas.AffiliateTemplateOut
 )
-def update_template(template_id: int, data: schemas.AffiliateTemplateCreate, db: Session = Depends(get_db)):
+def update_template(
+    template_id: int,
+    data: schemas.AffiliateTemplateCreate = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Sửa mẫu Lazada",
+                "value": {
+                    "merchant": "lazada",
+                    "network": "accesstrade",
+                    "template": "https://go.example/?url={target}&sub1={sub1}",
+                    "default_params": {"sub1": "ads2025"},
+                    "enabled": True
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     tpl = crud.update_affiliate_template(db, template_id, data)
     if not tpl:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -368,6 +554,19 @@ class ConvertReq(BaseModel):
     network: str = "accesstrade"
     params: Optional[Dict[str, str]] = None  # ví dụ {"sub1": "my_subid"}
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "merchant": "shopee",
+                    "url": "https://shopee.vn/product/12345",
+                    "network": "accesstrade",
+                    "params": {"sub1": "campaign_fb", "utm_source": "fbad"}
+                }
+            ]
+        }
+    }
+
 class ConvertRes(BaseModel):
     affiliate_url: str
     short_url: str
@@ -378,12 +577,31 @@ class ConvertRes(BaseModel):
     tags=["Affiliate 🎯"],
     summary="Chuyển link gốc → deeplink + shortlink",
     description=(
-        "Nhận link gốc + merchant → trả về **affiliate_url** (deeplink) và **short_url** dạng `/r/{token}`.\n"
-        "Hỗ trợ merge `default_params` từ template + `params` người dùng truyền."
+        "Nhận link gốc + merchant → trả về affiliate_url (deeplink) và short_url dạng /r/{token}.\n\n"
+        "- Bắt buộc: merchant, url.\n"
+        "- Tuỳ chọn: params (object), network (mặc định \"accesstrade\").\n\n"
+        "Lưu ý: URL phải thuộc domain hợp lệ của merchant (ví dụ shopee.vn).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"merchant\": \"shopee\",\n  \"url\": \"https://shopee.vn/product/123\",\n  \"params\": {\"sub1\": \"abc\"}\n}"
     ),
     response_model=ConvertRes
 )
-def aff_convert(req: ConvertReq, db: Session = Depends(get_db)):
+def aff_convert(
+    req: ConvertReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Convert Shopee",
+                "value": {
+                    "merchant": "shopee",
+                    "url": "https://shopee.vn/product/123",
+                    "params": {"sub1": "abc"}
+                }
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     if not _is_allowed_domain(req.merchant, str(req.url)):
         raise HTTPException(status_code=400, detail=f"URL không thuộc domain hợp lệ của {req.merchant}")
 
@@ -422,6 +640,18 @@ class IngestReq(BaseModel):
     path: str = "/v1/publishers/product_search"   # tuỳ provider
     params: Dict[str, str] | None = None
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "provider": "accesstrade",
+                    "path": "/v1/datafeeds",
+                    "params": {"merchant": "tikivn", "page": "1", "limit": "50"}
+                }
+            ]
+        }
+    }
+
 class IngestAllDatafeedsReq(BaseModel):
     """
     Ingest toàn bộ datafeeds trong một lần (tự phân trang nội bộ).
@@ -441,6 +671,20 @@ class IngestAllDatafeedsReq(BaseModel):
     throttle_ms: int = 0
     check_urls: bool = False
     verbose: bool = False
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "params": {"merchant": "tikivn"},
+                    "limit_per_page": 100,
+                    "max_pages": 1,
+                    "throttle_ms": 0,
+                    "check_urls": False,
+                    "verbose": False
+                }
+            ]
+        }
+    }
     
 class CampaignsSyncReq(BaseModel):
     """
@@ -459,6 +703,21 @@ class CampaignsSyncReq(BaseModel):
     window_pages: int = 10
     throttle_ms: int = 300
     merchant: str | None = None
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "statuses": ["running"],
+                    "only_my": True,
+                    "enrich_user_status": False,
+                    "limit_per_page": 50,
+                    "page_concurrency": 6,
+                    "window_pages": 10,
+                    "throttle_ms": 300
+                }
+            ]
+        }
+    }
 
 class IngestV2PromotionsReq(BaseModel):
     """
@@ -471,6 +730,17 @@ class IngestV2PromotionsReq(BaseModel):
     create_offers: bool = True
     check_urls: bool = False
     verbose: bool = False
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "merchant": "tikivn",
+                    "create_offers": True,
+                    "check_urls": False
+                }
+            ]
+        }
+    }
 
 class IngestV2TopProductsReq(BaseModel):
     """
@@ -489,6 +759,20 @@ class IngestV2TopProductsReq(BaseModel):
     limit_per_page: int = 100
     max_pages: int = 200
     throttle_ms: int = 0
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "merchant": "tikivn",
+                    "date_from": "2025-09-15",
+                    "date_to": "2025-09-22",
+                    "limit_per_page": 50,
+                    "max_pages": 1,
+                    "check_urls": False
+                }
+            ]
+        }
+    }
 # ================================
 # Unified provider-agnostic ingest (front-door)
 class UnifiedCampaignsSyncReq(CampaignsSyncReq):
@@ -535,60 +819,55 @@ _registry.register("accesstrade", ProviderOps(
 
 from sqlalchemy import func
 
-@app.get("/campaigns/summary", tags=["Campaigns 📢"])
+@app.get("/campaigns/summary", tags=["Campaigns 📢"]) 
 def campaigns_summary(db: Session = Depends(get_db)):
-    total = db.query(func.count(models.Campaign.campaign_id)).scalar() or 0
+    """Summary theo chuẩn mới: chỉ dựa trên user_registration_status."""
+    rows = db.query(
+        models.Campaign.status,
+        models.Campaign.user_registration_status,
+        models.Campaign.merchant,
+    ).all()
 
-    by_status = {
-        (k or "NULL"): v
-        for (k, v) in db.query(models.Campaign.status, func.count())
-                        .group_by(models.Campaign.status).all()
-    }
-    by_user_status = {
-        (k or "NULL"): v
-        for (k, v) in db.query(models.Campaign.user_registration_status, func.count())
-                        .group_by(models.Campaign.user_registration_status).all()
-    }
+    total = len(rows)
 
-    running_approved_count = (
-            db.query(func.count(models.Campaign.campaign_id))
-            .filter(models.Campaign.status == "running")
-            .filter(models.Campaign.user_registration_status.in_(["APPROVED", "SUCCESSFUL"]))
-            .scalar() or 0
-    )
-    approved_merchants = sorted({
-            m for (m,) in db.query(models.Campaign.merchant)
-                            .filter(models.Campaign.status == "running")
-                            .filter(models.Campaign.user_registration_status.in_(["APPROVED", "SUCCESSFUL"]))
-                            .distinct().all()
-            if m
-    })
+    def _norm_user(us: str | None) -> str | None:
+        if not us:
+            return None
+        u = str(us).strip().upper()
+        # chấp nhận SUCCESSFUL như APPROVED để tương thích nguồn dữ liệu
+        if u == "SUCCESSFUL":
+            return "APPROVED"
+        return u
+
+    by_status: dict[str, int] = {}
+    by_user_status: dict[str, int] = {}
+    running_approved_count = 0
+    approved_merchants_set: set[str] = set()
+
+    for status, us, merchant in rows:
+        st_key = status or "NULL"
+        by_status[st_key] = by_status.get(st_key, 0) + 1
+
+        eff_user = _norm_user(us)
+        us_key = eff_user or "NULL"
+        by_user_status[us_key] = by_user_status.get(us_key, 0) + 1
+
+        if (status == "running") and (eff_user == "APPROVED"):
+            running_approved_count += 1
+            if merchant:
+                approved_merchants_set.add(merchant)
+
+    approved_merchants = sorted(approved_merchants_set)
 
     return {
         "total": total,
         "by_status": by_status,
         "by_user_status": by_user_status,
         "running_approved_count": running_approved_count,
-        "approved_merchants": approved_merchants
+        "approved_merchants": approved_merchants,
     }
 
-@app.post("/maintenance/normalize-campaigns", tags=["Campaigns 📢"], summary="Chuẩn hoá dữ liệu campaign (v1 → v2)")
-def normalize_campaigns(db: Session = Depends(get_db)):
-    """
-    Di chuyển các giá trị 'successful/pending/unregistered' từ cột approval
-    sang user_registration_status, rồi set approval = NULL.
-    """
-    rows = db.query(models.Campaign).all()
-    moved = 0
-    for r in rows:
-        val = (r.approval or "").strip().lower() if r.approval else ""
-        if val in ("successful", "pending", "unregistered"):
-            r.user_registration_status = "APPROVED" if val == "successful" else val.upper()
-            r.approval = None
-            db.add(r)
-            moved += 1
-    db.commit()
-    return {"ok": True, "moved": moved}
+# Legacy maintenance endpoints removed; project uses the new standard exclusively.
 
 @app.get("/campaigns", response_model=list[schemas.CampaignOut], tags=["Campaigns 📢"])
 def list_campaigns_api(
@@ -601,27 +880,15 @@ def list_campaigns_api(
     q = db.query(models.Campaign)
     if status:
         q = q.filter(models.Campaign.status == status)
-    # filter chính xác theo tài liệu: approval = unregistered/pending/successful
+    # approval giờ chỉ mang nghĩa kiểu duyệt campaign; không dùng cho user status filter nữa
     if approval:
         q = q.filter(models.Campaign.approval == approval)
-    # hỗ trợ user_status: ưu tiên cột user_registration_status; nếu NULL mới fallback về approval map
+    # Filter user_status theo chuẩn mới trực tiếp
     if user_status:
         us = user_status.strip().upper()
-        fallback = {
-            "APPROVED": "successful",
-            "PENDING": "pending",
-            "NOT_REGISTERED": "unregistered",
-        }.get(us)
-        if fallback:
-            q = q.filter(
-                or_(
-                    models.Campaign.user_registration_status == us,
-                    and_(models.Campaign.user_registration_status == None,
-                         models.Campaign.approval == fallback)
-                )
-            )
-        else:
-            q = q.filter(models.Campaign.user_registration_status == us)
+        if us == "SUCCESSFUL":
+            us = "APPROVED"
+        q = q.filter(func.upper(func.trim(models.Campaign.user_registration_status)) == us)
     if merchant:
         q = q.filter(models.Campaign.merchant == merchant)
     return q.order_by(models.Campaign.updated_at.desc()).all()
@@ -631,10 +898,7 @@ def list_approved_merchants_api(db: Session = Depends(get_db)):
     rows = (
         db.query(models.Campaign.merchant)
         .filter(models.Campaign.status == "running")
-        .filter(or_(
-            models.Campaign.user_registration_status == "APPROVED",
-            models.Campaign.user_registration_status == "SUCCESSFUL",
-        ))
+        .filter(func.upper(func.trim(models.Campaign.user_registration_status)).in_(["APPROVED", "SUCCESSFUL"]))
         .distinct()
         .all()
     )
@@ -694,9 +958,13 @@ def list_offers_api(
 
 @app.post(
     "/ingest/policy",
-    tags=["Offers 🛒"],
+    tags=["Settings ⚙️"],
     summary="Cấu hình policy ingest",
-    description="Bật/tắt chế độ chỉ ingest sản phẩm có commission policy."
+    description=(
+        "Bật/tắt chế độ chỉ ingest sản phẩm có commission policy.\n"
+        "Bắt buộc: (không có) — dùng query only_with_commission=true/false.\n"
+        "Ví dụ: /ingest/policy?only_with_commission=true"
+    )
 )
 def set_ingest_policy(only_with_commission: bool = False, db: Session = Depends(get_db)):
     model_str = f"only_with_commission={'true' if only_with_commission else 'false'}"
@@ -710,9 +978,13 @@ def set_ingest_policy(only_with_commission: bool = False, db: Session = Depends(
 
 @app.post(
     "/ingest/policy/check-urls",
-    tags=["Offers 🛒"],
+    tags=["Settings ⚙️"],
     summary="Bật/tắt kiểm tra link khi IMPORT EXCEL",
-    description="Chỉ ảnh hưởng import Excel. API ingest (V1/V2) luôn mặc định KHÔNG check link."
+    description=(
+        "Chỉ ảnh hưởng import Excel. API ingest (V1/V2) luôn mặc định KHÔNG check link.\n"
+        "Bắt buộc: (không có) — dùng query enable=true/false.\n"
+        "Ví dụ: /ingest/policy/check-urls?enable=true"
+    )
 )
 def set_ingest_policy_check_urls(enable: bool = False, db: Session = Depends(get_db)):
     # dùng store flags trong api_configs.name='ingest_policy'
@@ -722,15 +994,30 @@ def set_ingest_policy_check_urls(enable: bool = False, db: Session = Depends(get
 
 @app.post(
     "/ingest/products",
-    tags=["Offers 🛒"],
+    tags=["Ingest 🌐"],
     summary="Ingest sản phẩm từ nhiều provider",
     description=(
-        "Nhập sản phẩm vào DB từ nhiều provider (ví dụ: Accesstrade). "
-        "Hiện hỗ trợ `provider=accesstrade`. Các provider khác có thể bổ sung sau."
+        "Nhập sản phẩm vào DB từ các provider. Hiện hỗ trợ Accesstrade.\n\n"
+        "- Bắt buộc: (không có — provider mặc định \"accesstrade\", path mặc định \"/v1/publishers/product_search\").\n"
+        "- Tuỳ chọn: path, params (chuyển xuống API của provider).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"provider\": \"accesstrade\",\n  \"path\": \"/v1/datafeeds\",\n  \"params\": {\"merchant\": \"tikivn\", \"page\": \"1\", \"limit\": \"50\"}\n}"
     )
 )
 async def ingest_products(
-    req: IngestReq,
+    req: IngestReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Datafeeds theo merchant",
+                "value": {
+                    "provider": "accesstrade",
+                    "path": "/v1/datafeeds",
+                    "params": {"merchant": "tikivn", "page": "1", "limit": "50"}
+                }
+            }
+        }
+    ),
     db: Session = Depends(get_db),
 ):
     provider = (req.provider or "accesstrade").lower()
@@ -797,7 +1084,10 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
 
         try:
             _row = crud.get_campaign_by_cid(db, camp_id)
-            if not _row or (_row.user_registration_status or "").upper() != "APPROVED":
+            _us = (_row.user_registration_status or "").upper() if _row else ""
+            if _us == "SUCCESSFUL":
+                _us = "APPROVED"
+            if not _row or _us != "APPROVED":
                 logger.info("Skip product vì campaign_id=%s chưa APPROVED [manual ingest]", camp_id)
                 _vlog("campaign_not_approved", {"campaign_id": camp_id})
                 continue
@@ -870,13 +1160,15 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
         _camp_row = crud.get_campaign_by_cid(db, camp_id)
         if _camp_row:
             us = (_camp_row.user_registration_status or "").upper()
+            if us == "SUCCESSFUL":
+                us = "APPROVED"
             data["approval_status"] = (
                 "successful" if us == "APPROVED" else
                 "pending" if us == "PENDING" else
                 "unregistered" if us == "NOT_REGISTERED" else None
             )
             data["eligible_commission"] = (
-                (_camp_row.status == "running") and (us in ("APPROVED", "SUCCESSFUL"))
+                (_camp_row.status == "running") and (us == "APPROVED")
             )
 
         if not await _check_url_alive(str(data.get("url") or "")):
@@ -978,13 +1270,17 @@ async def ingest_accesstrade_datafeeds_all(
         }
     merchant_campaign_map = {v: k for k, v in active_campaigns.items()}  # {merchant: campaign_id}
 
-    # Map merchant -> approved campaign_id (running + user APPROVED/SUCCESSFUL) for fallback rebinding
+    # Map merchant -> approved campaign_id (running + user APPROVED) for fallback rebinding
     approved_cid_by_merchant: dict[str, str] = {}
     try:
         for cid, m in active_campaigns.items():
             _row = crud.get_campaign_by_cid(db, cid)
-            if _row and (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL"):
-                approved_cid_by_merchant[(m or "").lower()] = cid
+            if _row:
+                _us = (_row.user_registration_status or "").upper()
+                if _us == "SUCCESSFUL":
+                    _us = "APPROVED"
+                if _us == "APPROVED":
+                    approved_cid_by_merchant[(m or "").lower()] = cid
     except Exception:
         pass
 
@@ -1018,8 +1314,12 @@ async def ingest_accesstrade_datafeeds_all(
     try:
         for cid, m in active_campaigns.items():
             _row = crud.get_campaign_by_cid(db, cid)
-            if _row and (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL"):
-                approved_merchants.add((m or "").lower())
+            if _row:
+                _us = (_row.user_registration_status or "").upper()
+                if _us == "SUCCESSFUL":
+                    _us = "APPROVED"
+                if _us == "APPROVED":
+                    approved_merchants.add((m or "").lower())
     except Exception:
         pass
     if not approved_merchants:
@@ -1124,7 +1424,9 @@ async def ingest_accesstrade_datafeeds_all(
                 try:
                     _row = crud.get_campaign_by_cid(db, camp_id)
                     us = (_row.user_registration_status or "").upper() if _row else ""
-                    if (not _row) or (us not in ("APPROVED", "SUCCESSFUL")):
+                    if us == "SUCCESSFUL":
+                        us = "APPROVED"
+                    if (not _row) or (us != "APPROVED"):
                         # Fallback: nếu merchant có campaign khác đã APPROVED, dùng campaign đó
                         alt_cid = approved_cid_by_merchant.get(merchant_norm)
                         if alt_cid:
@@ -1162,6 +1464,8 @@ async def ingest_accesstrade_datafeeds_all(
                         _camp_row = crud.get_campaign_by_cid(db, camp_id)
                         if _camp_row:
                             _us = (_camp_row.user_registration_status or "").upper()
+                            if _us == "SUCCESSFUL":
+                                _us = "APPROVED"
                             eligible_by_status = (_camp_row.status == "running") and (_us == "APPROVED")
                     except Exception:
                         eligible_by_status = False
@@ -1233,13 +1537,15 @@ async def ingest_accesstrade_datafeeds_all(
                 _camp_row = crud.get_campaign_by_cid(db, camp_id)
                 if _camp_row:
                     us = (_camp_row.user_registration_status or "").upper()
+                    if us == "SUCCESSFUL":
+                        us = "APPROVED"
                     data["approval_status"] = (
                         "successful" if us == "APPROVED" else
                         "pending" if us == "PENDING" else
                         "unregistered" if us == "NOT_REGISTERED" else None
                     )
                     data["eligible_commission"] = (
-                        (_camp_row.status == "running") and (us in ("APPROVED", "SUCCESSFUL"))
+                        (_camp_row.status == "running") and (us == "APPROVED")
                     )
 
                 # Link gốc: chỉ kiểm tra khi bật cờ (để tránh bỏ sót do chặn bot/timeout trong môi trường container)
@@ -1471,11 +1777,13 @@ async def ingest_v2_promotions(
                         "source_type": "promotions",
                         "raw": p,
                     }
-                    # Chỉ tạo offer nếu campaign đã duyệt (SUCCESSFUL/APPROVED)
+                    # Chỉ tạo offer nếu campaign đã duyệt (APPROVED)
                     try:
                         _row = crud.get_campaign_by_cid(db, campaign_id) if campaign_id else None
                         _user = (_row.user_registration_status or "").upper() if _row else ""
-                        if not _row or _user not in ("APPROVED", "SUCCESSFUL"):
+                        if _user == "SUCCESSFUL":
+                            _user = "APPROVED"
+                        if not _row or _user != "APPROVED":
                             continue
                     except Exception:
                         continue
@@ -1492,11 +1800,13 @@ async def ingest_v2_promotions(
                         currency="VND",
                         campaign_id=campaign_id,
                         source_type="promotions",
-                        # eligible_commission = campaign đang chạy & user APPROVED/SUCCESSFUL (dùng _row đã truy vấn trước đó)
+                        # eligible_commission = campaign đang chạy & user APPROVED
                         eligible_commission=bool(
                             _row
                             and _row.status == "running"
-                            and (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
+                            and (
+                                (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
+                            )
                         ),
                         affiliate_link_available=bool(aff),
                         extra=json.dumps(extra, ensure_ascii=False),
@@ -1669,11 +1979,29 @@ class DatafeedsAllUnifiedReq(ProviderReq, IngestAllDatafeedsReq):
 
 @app.post(
     "/ingest/campaigns/sync",
-    tags=["Ingest 🌐"],
+    tags=["Campaigns 📢"],
     summary="Đồng bộ campaigns (provider-agnostic)",
-    description="Hỗ trợ nhiều provider qua tham số `provider`. Hiện hỗ trợ: accesstrade."
+    description=(
+        "Đồng bộ danh sách campaigns.\n\n"
+        "- Bắt buộc: (không có).\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), statuses (mặc định [\"running\"]), only_my (mặc định true),\n"
+        "  enrich_user_status (mặc định true), limit_per_page, page_concurrency, window_pages, throttle_ms, merchant.\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"provider\": \"accesstrade\",\n  \"statuses\": [\"running\"],\n  \"only_my\": true\n}"
+    )
 )
-async def ingest_campaigns_sync_unified(req: CampaignsSyncUnifiedReq, db: Session = Depends(get_db)):
+async def ingest_campaigns_sync_unified(
+    req: CampaignsSyncUnifiedReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Chỉ chạy running",
+                "value": {"provider": "accesstrade", "statuses": ["running"], "only_my": True}
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     prov = (req.provider or "accesstrade").lower()
     if prov == "accesstrade":
         inner = CampaignsSyncReq(**req.model_dump(exclude={"provider"}))
@@ -1684,9 +2012,26 @@ async def ingest_campaigns_sync_unified(req: CampaignsSyncUnifiedReq, db: Sessio
     "/ingest/promotions",
     tags=["Ingest 🌐"],
     summary="Ingest promotions (provider-agnostic)",
-    description="Hỗ trợ nhiều provider qua tham số `provider`. Hiện hỗ trợ: accesstrade."
+    description=(
+        "Nhập khuyến mãi theo merchant.\n\n"
+        "- Bắt buộc: (không có).\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), merchant (lọc theo merchant), create_offers (mặc định true), check_urls (mặc định false).\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"create_offers\": true\n}"
+    )
 )
-async def ingest_promotions_unified(req: PromotionsUnifiedReq, db: Session = Depends(get_db)):
+async def ingest_promotions_unified(
+    req: PromotionsUnifiedReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Theo merchant",
+                "value": {"provider": "accesstrade", "merchant": "tikivn", "create_offers": True}
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     prov = (req.provider or "accesstrade").lower()
     if prov == "accesstrade":
         inner = IngestV2PromotionsReq(**req.model_dump(exclude={"provider"}))
@@ -1697,9 +2042,27 @@ async def ingest_promotions_unified(req: PromotionsUnifiedReq, db: Session = Dep
     "/ingest/top-products",
     tags=["Ingest 🌐"],
     summary="Ingest top products (provider-agnostic)",
-    description="Hỗ trợ nhiều provider qua tham số `provider`. Hiện hỗ trợ: accesstrade."
+    description=(
+        "Nhập sản phẩm bán chạy theo merchant.\n\n"
+        "- Bắt buộc: merchant.\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), date_from/date_to (YYYY-MM-DD), limit_per_page (<=100),\n"
+        "  max_pages, throttle_ms, check_urls (mặc định false), verbose.\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"limit_per_page\": 50,\n  \"max_pages\": 1\n}"
+    )
 )
-async def ingest_top_products_unified(req: TopProductsUnifiedReq, db: Session = Depends(get_db)):
+async def ingest_top_products_unified(
+    req: TopProductsUnifiedReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Top products 1 trang",
+                "value": {"provider": "accesstrade", "merchant": "tikivn", "limit_per_page": 50, "max_pages": 1}
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     prov = (req.provider or "accesstrade").lower()
     if prov == "accesstrade":
         inner = IngestV2TopProductsReq(**req.model_dump(exclude={"provider"}))
@@ -1710,9 +2073,27 @@ async def ingest_top_products_unified(req: TopProductsUnifiedReq, db: Session = 
     "/ingest/datafeeds/all",
     tags=["Ingest 🌐"],
     summary="Ingest datafeeds toàn bộ (provider-agnostic)",
-    description="Hỗ trợ nhiều provider qua tham số `provider`. Hiện hỗ trợ: accesstrade."
+    description=(
+        "Gọi datafeeds cho tất cả merchant đã duyệt.\n\n"
+        "- Bắt buộc: (không có).\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), params (truyền xuống API AT), limit_per_page (mặc định 100),\n"
+        "  max_pages (mặc định 2000), throttle_ms (mặc định 0), check_urls (mặc định false), verbose.\n\n"
+        "Ví dụ body JSON:\n"
+        "{\n  \"provider\": \"accesstrade\",\n  \"params\": {\"merchant\": \"tikivn\"},\n  \"max_pages\": 1\n}"
+    )
 )
-async def ingest_datafeeds_all_unified(req: DatafeedsAllUnifiedReq, db: Session = Depends(get_db)):
+async def ingest_datafeeds_all_unified(
+    req: DatafeedsAllUnifiedReq = Body(
+        ...,
+        examples={
+            "default": {
+                "summary": "Quét toàn bộ đã duyệt",
+                "value": {"provider": "accesstrade", "params": {"merchant": "tikivn"}, "max_pages": 1}
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     prov = (req.provider or "accesstrade").lower()
     if prov == "accesstrade":
         inner = IngestAllDatafeedsReq(**req.model_dump(exclude={"provider"}))
@@ -1735,7 +2116,19 @@ async def ingest_datafeeds_all_unified(req: DatafeedsAllUnifiedReq, db: Session 
     description="Sửa thông tin 1 sản phẩm trong DB theo ID.",
     response_model=schemas.ProductOfferOut
 )
-def update_offer_api(offer_id: int, data: schemas.ProductOfferUpdate, db: Session = Depends(get_db)):
+def update_offer_api(
+    offer_id: int,
+    data: schemas.ProductOfferUpdate = Body(
+        ...,
+        examples={
+            "patch-minimal": {
+                "summary": "Cập nhật một phần",
+                "value": {"title": "Sản phẩm mới", "price": 199000, "currency": "VND"}
+            }
+        }
+    ),
+    db: Session = Depends(get_db)
+):
     obj = crud.update_offer(db, offer_id, data)
     if not obj:
         raise HTTPException(status_code=404, detail="Offer not found")
@@ -1758,7 +2151,10 @@ def delete_offer_api(offer_id: int, db: Session = Depends(get_db)):
     "/offers/cleanup/dead",
     tags=["Offers 🛒"],
     summary="Dọn link chết (cleanup)",
-    description="Quét toàn bộ sản phẩm trong DB, kiểm tra link sống/chết và **xoá tất cả** link chết."
+    description=(
+        "Bắt buộc: (không có).\n"
+        "Tác vụ quét toàn bộ sản phẩm trong DB, kiểm tra link sống/chết và **xoá tất cả** link chết."
+    )
 )
 async def cleanup_dead_offers(db: Session = Depends(get_db)):
     offers = crud.list_offers(db, limit=1000)
@@ -1781,12 +2177,15 @@ async def cleanup_dead_offers(db: Session = Depends(get_db)):
 
 @app.post(
     "/scheduler/linkcheck/rotate",
-    tags=["Maintenance 🧹"],
-    summary="Kiểm tra link sống theo lát cắt 10% và xoay vòng",
+    tags=["Settings ⚙️"],
+    summary="Kiểm tra link sống theo lát cắt và xoay vòng",
     description=(
-        "Mỗi lần chạy sẽ kiểm tra ~10% sản phẩm theo điều kiện id % 10 = cursor. "
-        "Sau khi chạy xong, cursor tự tăng (modulo 10). "
-        "Tuỳ chọn xoá link chết."
+        "Cách dùng: gọi 1 lần sẽ kiểm tra một lát cắt theo điều kiện id % M = cursor.\n"
+        "- Bắt buộc: (không có) — endpoint không yêu cầu body.\n"
+        "- Tuỳ chọn: query delete_dead=true để xoá link chết trong lát hiện tại.\n"
+        "- M: số lát cắt (mặc định 24 do hệ thống đặt sẵn — có thể đổi qua /settings/linkcheck/config).\n"
+        "- linkcheck_limit: giới hạn số bản ghi mỗi lần (đặt qua /settings/linkcheck/config).\n"
+        "Sau mỗi lần chạy, cursor tự tăng (mod M)."
     )
 )
 async def scheduler_linkcheck_rotate(
@@ -1795,10 +2194,17 @@ async def scheduler_linkcheck_rotate(
 ):
     from accesstrade_service import _check_url_alive
     flags = crud.get_policy_flags(db)
-    cursor = int(flags.get("linkcheck_cursor", 0)) % 10
+    mod = int(flags.get("linkcheck_mod", 10) or 10)
+    if mod < 1:
+        mod = 10
+    cursor = int(flags.get("linkcheck_cursor", 0)) % mod
+    limit = flags.get("linkcheck_limit")
 
     from models import ProductOffer
-    slice_q = db.query(ProductOffer).filter(text("id % 10 = :cur")).params(cur=cursor)
+    # lọc theo modulo tuỳ biến
+    slice_q = db.query(ProductOffer).filter(text("id % :mod = :cur")).params(mod=mod, cur=cursor)
+    if isinstance(limit, int) and limit > 0:
+        slice_q = slice_q.limit(limit)
     offers = slice_q.all()
 
     total = len(offers)
@@ -1816,16 +2222,71 @@ async def scheduler_linkcheck_rotate(
                 removed += 1
     db.commit()
 
-    next_cursor = (cursor + 1) % 10
+    next_cursor = (cursor + 1) % mod
     crud.set_policy_flag(db, "linkcheck_cursor", next_cursor)
 
     return {
         "cursor_used": cursor,
         "next_cursor": next_cursor,
+        "mod": mod,
+        "limit": limit,
         "scanned": total,
         "alive": alive_count,
         "deleted": removed,
     }
+
+class LinkcheckConfigBody(BaseModel):
+    linkcheck_mod: int | None = None
+    linkcheck_limit: int | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"linkcheck_mod": 24, "linkcheck_limit": 1000},
+                {"linkcheck_mod": 20},
+                {"linkcheck_limit": 500},
+            ],
+            "description": (
+                "Bắt buộc: không có trường nào bắt buộc.\n"
+                "- linkcheck_mod (tuỳ chọn): số lát cắt (ví dụ 24 → 1/24 mỗi lần).\n"
+                "- linkcheck_limit (tuỳ chọn): giới hạn số record mỗi lần."
+            ),
+        }
+    }
+
+@app.post(
+    "/settings/linkcheck/config",
+    tags=["Settings ⚙️"],
+    summary="Cấu hình tham số link-check (mod/limit)",
+    description=(
+        "Thiết lập tham số xoay vòng kiểm tra link.\n"
+        "- Bắt buộc: (không có).\n"
+        "- Tuỳ chọn trong body JSON: linkcheck_mod, linkcheck_limit.\n"
+        "Ngoài ra có thể gửi qua query string (tương thích ngược). Giá trị được lưu trong API Config name=ingest_policy.\n\n"
+        "Ví dụ body JSON:\n{\n  \"linkcheck_mod\": 24,\n  \"linkcheck_limit\": 1000\n}"
+    )
+)
+def settings_linkcheck_config(
+    body: LinkcheckConfigBody | None = Body(
+        None,
+        examples={
+            "default": {"summary": "Thiết lập mặc định 24/1000", "value": {"linkcheck_mod": 24, "linkcheck_limit": 1000}},
+            "gioi_han_nho": {"summary": "Giới hạn 500 mỗi lượt", "value": {"linkcheck_limit": 500}}
+        }
+    ),
+    linkcheck_mod: int | None = None,
+    linkcheck_limit: int | None = None,
+    db: Session = Depends(get_db),
+):
+    # Ưu tiên body; nếu không có, lấy từ query để tương thích ngược
+    mod_val = body.linkcheck_mod if body else linkcheck_mod
+    limit_val = body.linkcheck_limit if body else linkcheck_limit
+    if mod_val is not None:
+        crud.set_policy_flag(db, "linkcheck_mod", max(1, int(mod_val)))
+    if limit_val is not None:
+        crud.set_policy_flag(db, "linkcheck_limit", max(1, int(limit_val)))
+    flags = crud.get_policy_flags(db)
+    return {"ok": True, "flags": flags}
 
 # --- API test nhanh: check 1 sản phẩm trong DB ---
 from datetime import datetime, UTC
@@ -1834,7 +2295,11 @@ from datetime import datetime, UTC
     "/offers/check/{offer_id}",
     tags=["Offers 🛒"],
     summary="Kiểm tra 1 sản phẩm (alive/dead)",
-    description="Kiểm tra nhanh trạng thái link của một sản phẩm trong DB theo ID."
+    description=(
+        "Bắt buộc: offer_id trong path.\n"
+        "Tuỳ chọn: (không có).\n"
+        "Kiểm tra nhanh trạng thái link của một sản phẩm trong DB theo ID."
+    )
 )
 async def check_offer_status(offer_id: int, db: Session = Depends(get_db)):
     offer = db.query(models.ProductOffer).filter(models.ProductOffer.id == offer_id).first()
@@ -2137,10 +2602,14 @@ def export_offers_excel(
         q_offers = q_offers.limit(limit)
     offers = q_offers.all()
 
-    # 2) Campaigns: độc lập, chỉ APPROVED/SUCCESSFUL
-    campaigns_all = db.query(models.Campaign).filter(
-        (models.Campaign.user_registration_status.in_(["APPROVED", "SUCCESSFUL"]))
-    ).all()
+    # 2) Campaigns: độc lập, chỉ APPROVED/SUCCESSFUL (chuẩn hoá theo uppercase/trim)
+    norm_user = func.upper(func.trim(models.Campaign.user_registration_status))
+    campaigns_all = (
+        db.query(models.Campaign)
+        .filter(norm_user.in_(["APPROVED", "SUCCESSFUL"]))
+        .order_by(models.Campaign.campaign_id.asc())
+        .all()
+    )
     campaign_map = {c.campaign_id: c for c in campaigns_all}
 
     # 3) Commissions: độc lập, lấy từ bảng CommissionPolicy
