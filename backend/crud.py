@@ -323,30 +323,22 @@ def upsert_campaign(db: Session, data: "schemas.CampaignCreate"):
         # cập nhật các trường có giá trị
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
         # Chuẩn hoá trạng thái user_registration_status theo chuẩn mới (SUCCESSFUL -> APPROVED; uppercase, trim)
-        if "user_registration_status" in payload:
-            # Nếu giá trị None/"" thì KHÔNG ghi đè giá trị hiện tại (tránh làm mất thông tin đã biết)
-            if payload["user_registration_status"] is None or str(payload["user_registration_status"]).strip() == "":
-                payload.pop("user_registration_status")
-            else:
-                us = str(payload["user_registration_status"]).strip().upper()
-                if us == "SUCCESSFUL":
-                    us = "APPROVED"
-                payload["user_registration_status"] = us
+        if "user_registration_status" in payload and payload["user_registration_status"] is not None:
+            us = str(payload["user_registration_status"]).strip().upper()
+            if us == "SUCCESSFUL":
+                us = "APPROVED"
+            payload["user_registration_status"] = us
         for k, v in payload.items():
             setattr(obj, k, v)
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
     payload = data.model_dump() if hasattr(data, "model_dump") else data.dict()
     # Chuẩn hoá khi tạo mới
-    if "user_registration_status" in payload:
-        if payload["user_registration_status"] is None or str(payload["user_registration_status"]).strip() == "":
-            # Không set field nếu giá trị không xác định (tránh lưu NULL ngay từ đầu)
-            payload.pop("user_registration_status")
-        else:
-            us = str(payload["user_registration_status"]).strip().upper()
-            if us == "SUCCESSFUL":
-                us = "APPROVED"
-            payload["user_registration_status"] = us
+    if "user_registration_status" in payload and payload["user_registration_status"] is not None:
+        us = str(payload["user_registration_status"]).strip().upper()
+        if us == "SUCCESSFUL":
+            us = "APPROVED"
+        payload["user_registration_status"] = us
     obj = models.Campaign(**payload)
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
