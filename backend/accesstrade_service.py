@@ -424,6 +424,19 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
     if not items:
         # Fallback sang 'camp_id'
         items, status_code, j = await _call({"camp_id": str(campaign_id)})
+    # Một số API có thể yêu cầu "campaign" (slug merchant) thay vì id → thử thêm nếu trước đó 404
+    if not items and status_code == 404:
+        try:
+            # Tìm slug merchant từ DB campaigns nếu có
+            from crud import get_campaign_by_cid
+            row = get_campaign_by_cid(db, str(campaign_id))
+            m_slug = getattr(row, "merchant", None)
+        except Exception:
+            m_slug = None
+        if m_slug:
+            items2, status_code2, j2 = await _call({"campaign": str(m_slug)})
+            if items2:
+                items, status_code, j = items2, status_code2, j2
 
     _log_jsonl("commission_policies.jsonl", {
         "endpoint": "commission_policies",
