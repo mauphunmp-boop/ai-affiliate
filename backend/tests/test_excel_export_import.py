@@ -126,7 +126,7 @@ def test_export_excel_structure_and_sources(client):
     dfc = xls.parse("Campaigns", skiprows=[1])
     expected_campaigns_cols = [
         "campaign_id","merchant","campaign_name","approval_type","user_status","status","start_time","end_time",
-        "category","conversion_policy","cookie_duration","cookie_policy","description","scope","sub_category","type","campaign_url"
+        "category","conversion_policy","cookie_duration","cookie_policy","description_url","scope","sub_category","type","campaign_url"
     ]
     assert list(dfc.columns) == expected_campaigns_cols
 

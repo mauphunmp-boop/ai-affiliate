@@ -323,11 +323,16 @@ def upsert_campaign(db: Session, data: "schemas.CampaignCreate"):
         # cập nhật các trường có giá trị
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
         # Chuẩn hoá trạng thái user_registration_status theo chuẩn mới (SUCCESSFUL -> APPROVED; uppercase, trim)
-        if "user_registration_status" in payload and payload["user_registration_status"] is not None:
-            us = str(payload["user_registration_status"]).strip().upper()
-            if us == "SUCCESSFUL":
-                us = "APPROVED"
-            payload["user_registration_status"] = us
+        if "user_registration_status" in payload:
+            us_val = payload.get("user_registration_status")
+            # Không ghi đè bằng None/"" → xoá khỏi payload để giữ nguyên giá trị hiện có trong DB
+            if us_val in (None, ""):
+                payload.pop("user_registration_status", None)
+            else:
+                us = str(us_val).strip().upper()
+                if us == "SUCCESSFUL":
+                    us = "APPROVED"
+                payload["user_registration_status"] = us
         for k, v in payload.items():
             setattr(obj, k, v)
         db.add(obj); db.commit(); db.refresh(obj)

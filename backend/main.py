@@ -8,6 +8,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, 
 from fastapi.middleware.cors import CORSMiddleware
 from providers import ProviderRegistry, ProviderOps
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 import io
 from fastapi.exceptions import RequestValidationError
 
@@ -867,6 +868,77 @@ def campaigns_summary(db: Session = Depends(get_db)):
         "approved_merchants": approved_merchants,
     }
 
+@app.post(
+    "/campaigns/backfill-user-status",
+    tags=["Campaigns 📢"],
+    summary="Backfill user_registration_status cho campaigns bị NULL/empty",
+    description=(
+        "Dò các campaign có user_registration_status NULL/empty, gọi campaign detail để lấy trạng thái,\n"
+        "chuẩn hoá (SUCCESSFUL→APPROVED) và upsert lại. Trả về thống kê trước/sau và số lượng cập nhật.\n\n"
+        "Lưu ý: Dùng AT_MOCK=1 để chạy ở chế độ mock nếu chưa cấu hình Accesstrade."
+    )
+)
+async def backfill_user_status(limit: int = 200, db: Session = Depends(get_db)):
+    # Helper: normalize user status
+    def _norm(us: str | None) -> str | None:
+        if not us:
+            return None
+        s = str(us).strip().upper()
+        if not s:
+            return None
+        if s == "SUCCESSFUL":
+            return "APPROVED"
+        return s
+
+    def _summary() -> dict:
+        rows = db.query(models.Campaign.status, models.Campaign.user_registration_status).all()
+        total = len(rows)
+        by_status: dict[str,int] = {}
+        by_user: dict[str,int] = {}
+        for st, us in rows:
+            st_key = st or "NULL"
+            by_status[st_key] = by_status.get(st_key, 0) + 1
+            eff = _norm(us) or "NULL"
+            by_user[eff] = by_user.get(eff, 0) + 1
+        return {"total": total, "by_status": by_status, "by_user_status": by_user}
+
+    before = _summary()
+
+    targets = (
+        db.query(models.Campaign)
+        .filter(or_(models.Campaign.user_registration_status.is_(None), func.trim(models.Campaign.user_registration_status) == ""))
+        .limit(limit)
+        .all()
+    )
+    fixed = 0
+    for c in targets:
+        try:
+            det = await fetch_campaign_detail(db, c.campaign_id)
+            if not det:
+                continue
+            user_raw = (
+                det.get("user_registration_status")
+                or det.get("publisher_status")
+                or det.get("user_status")
+            )
+            if not user_raw:
+                appr = det.get("approval")
+                if isinstance(appr, str) and appr.lower() in ("successful", "pending", "unregistered"):
+                    user_raw = "APPROVED" if appr.lower() == "successful" else appr.upper()
+            eff = _norm(user_raw)
+            if not eff:
+                continue
+            crud.upsert_campaign(db, schemas.CampaignCreate(
+                campaign_id=str(c.campaign_id),
+                user_registration_status=eff,
+            ))
+            fixed += 1
+        except Exception:
+            continue
+
+    after = _summary()
+    return {"fixed": fixed, "before": before, "after": after}
+
 # Legacy maintenance endpoints removed; project uses the new standard exclusively.
 
 @app.get("/campaigns", response_model=list[schemas.CampaignOut], tags=["Campaigns 📢"])
@@ -1240,7 +1312,8 @@ async def ingest_accesstrade_datafeeds_all(
                 approval=approval_for_campaign,                 # KHÔNG còn ghi 'successful/pending/unregistered' ở đây
                 start_time=camp.get("start_time"),
                 end_time=camp.get("end_time"),
-                user_registration_status=user_status,           # NOT_REGISTERED/PENDING/APPROVED hoặc None
+                # Ghi user_status hiệu dụng (ưu tiên giá trị mới; nếu None dùng giá trị cũ để tránh NULL)
+                user_registration_status=eff_user,           # NOT_REGISTERED/PENDING/APPROVED hoặc None
             )
 
             crud.upsert_campaign(db, payload)
@@ -1673,7 +1746,8 @@ async def ingest_v2_campaigns_sync(
                 approval=approval_val,                  # KHÔNG còn ghi 'successful' ở đây nữa
                 start_time=camp.get("start_time"),
                 end_time=camp.get("end_time"),
-                user_registration_status=user_status,   # NOT_REGISTERED / PENDING / APPROVED / None
+                # Ghi user_status hiệu dụng (ưu tiên giá trị mới; nếu None dùng giá trị cũ để tránh NULL)
+                user_registration_status=eff_user,   # NOT_REGISTERED / PENDING / APPROVED / None
             )
             crud.upsert_campaign(db, payload)
             imported += 1
@@ -1977,6 +2051,38 @@ class TopProductsUnifiedReq(ProviderReq, IngestV2TopProductsReq):
 class DatafeedsAllUnifiedReq(ProviderReq, IngestAllDatafeedsReq):
     pass
 
+class IngestCommissionsReq(ProviderReq, BaseModel):
+    """
+    Ingest commission policies (hoa hồng) cho campaign.
+    - campaign_ids: danh sách campaign_id cần lấy. Nếu không có, chọn theo merchant hoặc tất cả campaign đang chạy đã APPROVED.
+    - merchant: lọc theo merchant (nếu không truyền campaign_ids).
+    - max_campaigns: giới hạn số campaign tối đa sẽ quét (để an toàn). Mặc định 100.
+    - verbose: ghi log chi tiết vào JSONL.
+    """
+    campaign_ids: list[str] | None = None
+    merchant: str | None = None
+    max_campaigns: int = 100
+    verbose: bool = False
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "Theo campaign cụ thể",
+                    "value": {"provider": "accesstrade", "campaign_ids": ["CAMP3"]}
+                },
+                {
+                    "summary": "Theo merchant",
+                    "value": {"provider": "accesstrade", "merchant": "tikivn"}
+                },
+                {
+                    "summary": "Tất cả campaign APPROVED đang chạy",
+                    "value": {"provider": "accesstrade"}
+                }
+            ]
+        }
+    }
+
 @app.post(
     "/ingest/campaigns/sync",
     tags=["Campaigns 📢"],
@@ -2103,6 +2209,80 @@ async def ingest_datafeeds_all_unified(
 """Legacy provider-specific routes have been removed. Use unified endpoints."""
 
 """Legacy provider-specific routes have been removed. Use unified endpoints."""
+
+@app.post(
+    "/ingest/commissions",
+    tags=["Ingest 🌐"],
+    summary="Ingest commission policies (hoa hồng)",
+    description=(
+        "Nhập chính sách hoa hồng theo campaign.")
+)
+async def ingest_commissions_unified(
+    req: IngestCommissionsReq = Body(
+        ...,
+        examples={
+            "by_campaign": {
+                "summary": "Theo campaign cụ thể",
+                "value": {"provider": "accesstrade", "campaign_ids": ["CAMP3"]},
+            },
+            "by_merchant": {
+                "summary": "Theo merchant",
+                "value": {"provider": "accesstrade", "merchant": "tikivn"},
+            },
+            "all_running": {
+                "summary": "Tất cả campaign APPROVED đang chạy",
+                "value": {"provider": "accesstrade"},
+            },
+        },
+    ),
+    db: Session = Depends(get_db),
+):
+    from accesstrade_service import fetch_active_campaigns, fetch_commission_policies
+    prov = (req.provider or "accesstrade").lower()
+    if prov != "accesstrade":
+        raise HTTPException(status_code=400, detail=f"Provider '{prov}' hiện chưa được hỗ trợ")
+
+    # Xác định danh sách campaign_id cần lấy
+    campaign_ids: list[str] = []
+    if req.campaign_ids:
+        campaign_ids = [str(c).strip() for c in req.campaign_ids if str(c).strip()]
+    else:
+        # tất cả campaign đang chạy đã APPROVED (hoặc lọc theo merchant)
+        active = await fetch_active_campaigns(db)  # {cid: merchant}
+        for cid, m in active.items():
+            row = crud.get_campaign_by_cid(db, cid)
+            if not row:
+                continue
+            us = (row.user_registration_status or "").upper()
+            if us == "SUCCESSFUL":
+                us = "APPROVED"
+            if us != "APPROVED":
+                continue
+            if req.merchant and (m or "").lower() != req.merchant.strip().lower():
+                continue
+            campaign_ids.append(cid)
+        if req.max_campaigns and len(campaign_ids) > req.max_campaigns:
+            campaign_ids = campaign_ids[: max(1, int(req.max_campaigns))]
+
+    imported = 0
+    for cid in campaign_ids:
+        try:
+            items = await fetch_commission_policies(db, cid)
+            for rec in (items or []):
+                crud.upsert_commission_policy(db, schemas.CommissionPolicyCreate(
+                    campaign_id=str(cid),
+                    reward_type=rec.get("reward_type") or rec.get("type"),
+                    sales_ratio=rec.get("sales_ratio") or rec.get("ratio"),
+                    sales_price=rec.get("sales_price"),
+                    target_month=rec.get("target_month"),
+                ))
+                imported += 1
+        except Exception as e:
+            if req.verbose:
+                logger.debug("Ingest commission failed for %s: %s", cid, e)
+            continue
+
+    return {"ok": True, "campaigns": len(campaign_ids), "policies_imported": imported}
 
 # ================================
 # NEW: One-shot ingest ALL sources for APPROVED merchants
@@ -2582,6 +2762,8 @@ def export_offers_excel(
     title: str | None = None,
     skip: int = 0,
     limit: int = 0,  # nếu =0 thì xuất toàn bộ
+    max_text_len: int | None = None,  # tuỳ chọn: giới hạn ký tự cho các trường văn bản dài
+    desc_mode: str | None = "text",  # (không còn cần thiết khi đã dùng link; để tương thích ngược)
     db: Session = Depends(get_db)
 ):
     import os, json
@@ -2618,6 +2800,56 @@ def export_offers_excel(
     # 4) Promotions: độc lập, lấy từ bảng Promotion (kèm merchant từ campaign nếu có)
     promotions_all = db.query(models.Promotion).all()
 
+    # Helper: sanitize values for Excel XML (remove control chars, limit length)
+    import re
+    _illegal_xml_re = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
+    def _sanitize_val(v):
+        import datetime as _dt
+        if v is None:
+            return None
+        # Convert dict/list to JSON string
+        if isinstance(v, (dict, list)):
+            try:
+                v = json.dumps(v, ensure_ascii=False)
+            except Exception:
+                v = str(v)
+        # Convert datetime to ISO
+        if hasattr(v, 'isoformat') and not isinstance(v, str):
+            try:
+                v = v.isoformat()
+            except Exception:
+                v = str(v)
+        s = str(v)
+        # Remove illegal XML control characters and truncate to Excel cell limit
+        s = _illegal_xml_re.sub(" ", s)
+        # Ngăn Excel hiểu nhầm chuỗi là công thức (='+-@) → prefix bằng dấu nháy đơn
+        if s and s[0] in ("=", "+", "-", "@"):
+            s = "'" + s
+        # Giới hạn độ dài: ưu tiên max_text_len nếu được truyền, ngược lại 32K (giới hạn Excel ~32767)
+        _limit = 32000 if (max_text_len is None or max_text_len <= 0) else max_text_len
+        if len(s) > _limit:
+            s = s[:_limit]
+        return s
+
+    # Helper: strip HTML to plain text (simple, dependency-free)
+    def _strip_html(val):
+        if val in (None, "", []):
+            return None
+        try:
+            import re, html as _html
+            s = str(val)
+            # Remove script/style blocks
+            s = re.sub(r"<\s*(script|style)[^>]*>[\s\S]*?<\s*/\s*\1\s*>", " ", s, flags=re.IGNORECASE)
+            # Remove all tags
+            s = re.sub(r"<[^>]+>", " ", s)
+            # Unescape HTML entities
+            s = _html.unescape(s)
+            # Collapse whitespace
+            s = re.sub(r"\s+", " ", s).strip()
+            return s
+        except Exception:
+            return str(val)
+
     # 5) Đọc JSONL logs để enrich Campaign fields (giống trước đây)
     LOG_DIR = os.getenv("API_LOG_DIR", "./logs")
     def _read_jsonl(path):
@@ -2642,11 +2874,11 @@ def export_offers_excel(
         if not rec:
             return "API_MISSING"
         if field_name == "end_time" and rec.get("has_end_time") is False:
-            return "API_EMPTY"
+            return "NO_DATA"
         if field_name == "user_registration_status" and rec.get("has_user_status") is False:
-            return "API_EMPTY"
+            return "NO_DATA"
         if rec.get("empty") is True:
-            return "API_EMPTY"
+            return "NO_DATA"
         raw = rec.get("raw")
         if isinstance(raw, dict):
             data = None
@@ -2661,9 +2893,9 @@ def export_offers_excel(
                         v = data.get(k, None)
                         if v not in (None, "", []):
                             return v
-                    return "API_EMPTY"
+                    return "NO_DATA"
                 v = data.get(field_name, None)
-                return v if v not in (None, "", []) else "API_EMPTY"
+                return v if v not in (None, "", []) else "NO_DATA"
         return "API_MISSING"
 
     # ---------------------------
@@ -2682,53 +2914,59 @@ def export_offers_excel(
             "source": o.source,
             "source_id": o.source_id,
             "source_type": o.source_type,
-            "merchant": o.merchant,
-            "title": o.title,
-            "url": o.url,
-            "affiliate_url": o.affiliate_url,
-            "image_url": o.image_url,
+            "merchant": _sanitize_val(o.merchant),
+            "title": _sanitize_val(o.title),
+            "url": _sanitize_val(o.url),
+            "affiliate_url": _sanitize_val(o.affiliate_url),
+            "image_url": _sanitize_val(o.image_url),
             "price": o.price,
-            "currency": o.currency,
+            "currency": _sanitize_val(o.currency),
             "campaign_id": o.campaign_id,
-            "product_id": json.dumps(extra.get("product_id")) if False else (extra.get("product_id") or getattr(o, "product_id", None)),
+            "product_id": _sanitize_val(extra.get("product_id") or getattr(o, "product_id", None)),
             "affiliate_link_available": extra.get("affiliate_link_available"),
-            "domain": extra.get("domain"),
-            "sku": extra.get("sku"),
+            "domain": _sanitize_val(extra.get("domain")),
+            "sku": _sanitize_val(extra.get("sku")),
             "discount": extra.get("discount"),
             "discount_amount": extra.get("discount_amount"),
             "discount_rate": extra.get("discount_rate"),
             "status_discount": extra.get("status_discount"),
-            "updated_at": o.updated_at.isoformat() if o.updated_at else None,
-            "desc": extra.get("desc"),
-            "cate": extra.get("cate"),
-            "shop_name": extra.get("shop_name"),
-            "update_time_raw": extra.get("update_time_raw") or extra.get("update_time"),
+            "updated_at": _sanitize_val(o.updated_at.isoformat() if o.updated_at else None),
+            "desc": _sanitize_val(extra.get("desc")),
+            "cate": _sanitize_val(extra.get("cate")),
+            "shop_name": _sanitize_val(extra.get("shop_name")),
+            "update_time_raw": _sanitize_val(extra.get("update_time_raw") or extra.get("update_time")),
         })
 
     # ---------------------------
     # Build Campaigns rows (independent)
     # ---------------------------
     df_campaigns_rows = []
-    for c in campaigns_all:
+    # Chuẩn bị base URL công khai (nếu có) để tạo link mở trình duyệt
+    PUBLIC_BASE = os.getenv("EXPORT_PUBLIC_BASE_URL") or os.getenv("PUBLIC_BASE_URL") or "http://localhost:8000"
+
+    for idx, c in enumerate(campaigns_all, start=1):
         cid = c.campaign_id
+        _desc_raw = _campaign_field_from_log(cid, "description")
+        has_desc = bool(_strip_html(_desc_raw))
         df_campaigns_rows.append({
             "campaign_id": c.campaign_id,
-            "merchant": c.merchant,
-            "campaign_name": c.name,
-            "approval_type": c.approval,
-            "user_status": c.user_registration_status,
-            "status": c.status or _campaign_field_from_log(cid, "status"),
-            "start_time": c.start_time,
-            "end_time": c.end_time if c.end_time else _campaign_field_from_log(cid, "end_time"),
-            "category": _campaign_field_from_log(cid, "category"),
-            "conversion_policy": _campaign_field_from_log(cid, "conversion_policy"),
-            "cookie_duration": _campaign_field_from_log(cid, "cookie_duration"),
-            "cookie_policy": _campaign_field_from_log(cid, "cookie_policy"),
-            "description": _campaign_field_from_log(cid, "description"),
-            "scope": _campaign_field_from_log(cid, "scope"),
-            "sub_category": _campaign_field_from_log(cid, "sub_category"),
-            "type": _campaign_field_from_log(cid, "type"),
-            "campaign_url": _campaign_field_from_log(cid, "url"),
+            "merchant": _sanitize_val(c.merchant),
+            "campaign_name": _sanitize_val(c.name),
+            "approval_type": _sanitize_val(c.approval),
+            "user_status": _sanitize_val(c.user_registration_status),
+            "status": _sanitize_val(c.status or _campaign_field_from_log(cid, "status")),
+            "start_time": _sanitize_val(c.start_time),
+            "end_time": _sanitize_val(c.end_time if c.end_time else _campaign_field_from_log(cid, "end_time")),
+            "category": _sanitize_val(_campaign_field_from_log(cid, "category")),
+            "conversion_policy": _sanitize_val(_campaign_field_from_log(cid, "conversion_policy")),
+            "cookie_duration": _sanitize_val(_campaign_field_from_log(cid, "cookie_duration")),
+            "cookie_policy": _sanitize_val(_campaign_field_from_log(cid, "cookie_policy")),
+            # Chỉ tạo link ngoài nếu thực sự có mô tả
+            "description_url": (f"{PUBLIC_BASE}/campaigns/{cid}/description" if (PUBLIC_BASE and has_desc) else None),
+            "scope": _sanitize_val(_campaign_field_from_log(cid, "scope")),
+            "sub_category": _sanitize_val(_campaign_field_from_log(cid, "sub_category")),
+            "type": _sanitize_val(_campaign_field_from_log(cid, "type")),
+            "campaign_url": _sanitize_val(_campaign_field_from_log(cid, "url")),
         })
 
     # ---------------------------
@@ -2754,13 +2992,13 @@ def export_offers_excel(
             m = campaign_map[pr.campaign_id].merchant
         df_promotions_rows.append({
             "campaign_id": pr.campaign_id,
-            "merchant": m,
-            "name": pr.name,
-            "content": pr.content,
-            "start_time": pr.start_time,
-            "end_time": pr.end_time,
-            "coupon": pr.coupon,
-            "link": pr.link,
+            "merchant": _sanitize_val(m),
+            "name": _sanitize_val(pr.name),
+            "content": _sanitize_val(pr.content),
+            "start_time": _sanitize_val(pr.start_time),
+            "end_time": _sanitize_val(pr.end_time),
+            "coupon": _sanitize_val(pr.coupon),
+            "link": _sanitize_val(pr.link),
         })
 
     # DataFrames
@@ -2786,7 +3024,7 @@ def export_offers_excel(
         "start_time": "Bắt đầu", "end_time": "Kết thúc",
         "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
         "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
-        "description": "Mô tả", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+        "description_url": "Mô tả (Web)", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
         "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
@@ -2813,7 +3051,12 @@ def export_offers_excel(
     df_promotions = _with_header(df_promotions, trans_promotions)
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    # Tắt auto-detect công thức/URL của xlsxwriter để tránh Excel tự tạo công thức hoặc hyperlink
+    with pd.ExcelWriter(
+        output,
+        engine="xlsxwriter",
+        engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}},
+    ) as writer:
         # Nếu DataFrame rỗng, vẫn cần tạo cột theo trans để sheet có header
         def _ensure_cols(df, trans_map):
             cols = list(trans_map.keys())
@@ -2834,6 +3077,37 @@ def export_offers_excel(
         df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
         df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
         df_promotions.to_excel(writer, sheet_name="Promotions", index=False)
+
+        # Re-add clickable hyperlinks explicitly for known URL columns
+        wb = writer.book
+        url_format = wb.add_format({"font_color": "blue", "underline": 1})
+        def _write_urls(ws, df, cols: list[str]):
+            for col in cols:
+                if col not in df.columns:
+                    continue
+                c_idx = df.columns.get_loc(col)
+                # Skip the Vietnamese header row at df index 0; Excel row = df_index + 1
+                for r_idx, row in df.iloc[1:].iterrows():
+                    val = row.get(col)
+                    if not val:
+                        continue
+                    s = str(val)
+                    if s.lower().startswith(("http://", "https://")):
+                        excel_row = r_idx + 1  # account for header row
+                        try:
+                            ws.write_url(excel_row, c_idx, s, url_format, string=s)
+                        except Exception:
+                            pass
+
+        ws_prod = writer.sheets.get("Products")
+        ws_camp = writer.sheets.get("Campaigns")
+        ws_prom = writer.sheets.get("Promotions")
+        if ws_prod is not None:
+            _write_urls(ws_prod, df_products, ["url", "affiliate_url", "image_url"])
+        if ws_camp is not None:
+            _write_urls(ws_camp, df_campaigns, ["campaign_url", "description_url"])
+        if ws_prom is not None:
+            _write_urls(ws_prom, df_promotions, ["link"])
 
         # Style the Vietnamese header row (row index 1) as bold + italic
         workbook = writer.book
@@ -2880,7 +3154,7 @@ def export_excel_template():
         "start_time": "Bắt đầu", "end_time": "Kết thúc",
         "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
         "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
-        "description": "Mô tả", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+        "description_url": "Mô tả (Web)", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
         "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
@@ -2903,7 +3177,11 @@ def export_excel_template():
     df_promotions = _df_with_header(trans_promotions)
 
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(
+        output,
+        engine="xlsxwriter",
+        engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}},
+    ) as writer:
         df_products.to_excel(writer, sheet_name="Products", index=False)
         df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
         df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
@@ -2936,3 +3214,56 @@ def export_excel_template():
 )
 def campaigns_registration_alerts(db: Session = Depends(get_db)):
     return crud.campaigns_need_registration_alerts(db)
+
+# ---------------- Optional helper page: campaign description as HTML ----------------
+@app.get(
+        "/campaigns/{campaign_id}/description",
+        tags=["Campaigns 📢"],
+        summary="Xem mô tả chiến dịch (HTML rút gọn)",
+)
+def campaign_description_page(campaign_id: str, db: Session = Depends(get_db)):
+        import html, re
+        # Lấy từ log đã lưu (ưu tiên, vì đầy đủ hơn DB)
+        LOG_DIR = os.getenv("API_LOG_DIR", "./logs")
+        path = os.path.join(LOG_DIR, "campaign_detail.jsonl")
+        raw_html = None
+        try:
+                with open(path, "r", encoding="utf-8") as f:
+                        for line in f:
+                                try:
+                                        rec = json.loads(line)
+                                        if str(rec.get("campaign_id")) == str(campaign_id):
+                                                data = rec.get("raw", {}).get("data")
+                                                if isinstance(data, list) and data:
+                                                        data = data[0]
+                                                if isinstance(data, dict):
+                                                        raw_html = data.get("description")
+                                except Exception:
+                                        continue
+        except FileNotFoundError:
+                pass
+        # Fallback rỗng nếu không có
+        raw_html = raw_html or "<p>Không tìm thấy mô tả.</p>"
+        # Vệ sinh tối thiểu: chặn script/style
+        raw_html = re.sub(r"<\s*(script|style)[^>]*>[\s\S]*?<\s*/\s*\1\s*>", "", str(raw_html), flags=re.IGNORECASE)
+        body = f"""
+        <!doctype html>
+        <html lang=vi>
+        <head>
+            <meta charset="utf-8" />
+            <title>Mô tả chiến dịch {html.escape(str(campaign_id))}</title>
+            <style>
+                body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; line-height: 1.6; }}
+                .container {{ max-width: 980px; margin: 0 auto; }}
+                .meta {{ color: #666; margin-bottom: 16px; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="meta">Campaign ID: {html.escape(str(campaign_id))}</div>
+                <div class="content">{raw_html}</div>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=body)
