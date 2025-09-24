@@ -405,7 +405,10 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
         }]
     url = cfg.base_url.rstrip("/") + "/v1/commission_policies"
 
-    async def _call(params: Dict[str, str]) -> tuple[list[dict], int, dict|None]:
+    # Lưu lại toàn bộ attempt để log & debug 404 (tham số gọi, mã lỗi, trích response)
+    attempts: list[dict] = []
+
+    async def _call(params: Dict[str, str]) -> tuple[list[dict], int, dict|None, str|None]:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(url, headers=_headers(cfg.api_key), params=params)
             ok = (r.status_code == 200)
@@ -417,24 +420,64 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
                     items = payload
                 elif isinstance(payload, dict):
                     items = [payload]
-            return items, r.status_code, j
+            # trích lỗi text nếu không phải 200 để trợ giúp phân tích (giới hạn 512 ký tự)
+            err_text = None
+            if not ok:
+                try:
+                    err_text = (r.text or "")[:512]
+                except Exception:
+                    err_text = None
+            attempts.append({
+                "params": params,
+                "status_code": r.status_code,
+                "ok": ok,
+                "items_count": len(items),
+                "error": err_text,
+            })
+            return items, r.status_code, j, err_text
 
     # Thử kiểu 'campaign_id' trước
-    items, status_code, j = await _call({"campaign_id": str(campaign_id)})
+    items, status_code, j, _ = await _call({"campaign_id": str(campaign_id)})
     if not items:
         # Fallback sang 'camp_id'
-        items, status_code, j = await _call({"camp_id": str(campaign_id)})
-    # Một số API có thể yêu cầu "campaign" (slug merchant) thay vì id → thử thêm nếu trước đó 404
-    if not items and status_code == 404:
+        items, status_code, j, _ = await _call({"camp_id": str(campaign_id)})
+    # Một số API có thể yêu cầu "campaign" (slug) hoặc "merchant" thay vì id → thử thêm nếu trước đó 404/empty
+    if not items and status_code in (200, 400, 404):
+        # Lấy merchant/slug từ DB; nếu không có, thử fetch chi tiết campaign để suy ra
+        m_slug: str | None = None
         try:
-            # Tìm slug merchant từ DB campaigns nếu có
             from crud import get_campaign_by_cid
             row = get_campaign_by_cid(db, str(campaign_id))
-            m_slug = getattr(row, "merchant", None)
+            m_slug = (getattr(row, "merchant", None) or None)
         except Exception:
             m_slug = None
-        if m_slug:
-            items2, status_code2, j2 = await _call({"campaign": str(m_slug)})
+
+        # Nếu chưa có m_slug, thử lấy từ API campaign detail
+        if not m_slug:
+            try:
+                from accesstrade_service import fetch_campaign_detail
+                detail = await fetch_campaign_detail(db, str(campaign_id))
+                if isinstance(detail, dict):
+                    # ưu tiên field 'campaign' nếu có, sau đó 'merchant'
+                    m_slug = (detail.get("campaign") or detail.get("merchant") or None)
+            except Exception:
+                pass
+
+        # Thử lần lượt các biến thể tham số
+        for key in ("campaign", "merchant"):
+            if items or not m_slug:
+                break
+            items2, status_code2, j2, _ = await _call({key: str(m_slug).strip().lower()})
+            if items2:
+                items, status_code, j = items2, status_code2, j2
+                break
+
+        # Một số hệ thống yêu cầu cả id và merchant cùng lúc (phòng hờ)
+        if not items and m_slug:
+            items2, status_code2, j2, _ = await _call({
+                "campaign_id": str(campaign_id),
+                "merchant": str(m_slug).strip().lower(),
+            })
             if items2:
                 items, status_code, j = items2, status_code2, j2
 
@@ -445,6 +488,7 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
         "ok": (status_code == 200),
         "items_count": len(items),
         "raw": j if status_code == 200 else None,
+        "attempts": attempts,
     })
     return items
 

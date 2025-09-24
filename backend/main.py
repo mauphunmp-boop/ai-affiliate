@@ -2215,7 +2215,12 @@ async def ingest_datafeeds_all_unified(
     tags=["Ingest 🌐"],
     summary="Ingest commission policies (hoa hồng)",
     description=(
-        "Nhập chính sách hoa hồng theo campaign.")
+        "Gọi datafeeds commissions cho danh sách campaign đã chọn.\n\n"
+        "- Bắt buộc: (không có).\n"
+        "- Tuỳ chọn: provider (mặc định 'accesstrade'), campaign_ids (danh sách), merchant (lọc theo merchant nếu không truyền campaign_ids),\n"
+        "  max_campaigns (mặc định 100), verbose (mặc định false).\n\n"
+        "Ví dụ body JSON: { \"provider\": \"accesstrade\", \"merchant\": \"tikivn\", \"max_campaigns\": 50 }"
+    )
 )
 async def ingest_commissions_unified(
     req: IngestCommissionsReq = Body(
@@ -2519,14 +2524,10 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     if not file.filename.endswith(".xlsx"):
         raise HTTPException(status_code=400, detail="Chỉ hỗ trợ file .xlsx")
 
+    # Đọc toàn bộ nội dung file một lần để parse nhiều sheet an toàn
     try:
-        # Read specifically the 'Products' sheet (if present). Fall back to first sheet.
-        try:
-            df = pd.read_excel(file.file, sheet_name="Products")
-        except Exception:
-            # fallback to first sheet
-            file.file.seek(0)
-            df = pd.read_excel(file.file)
+        content = file.file.read()
+        xls = pd.ExcelFile(io.BytesIO(content))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Lỗi đọc file Excel: {e}")
 
@@ -2546,36 +2547,59 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
         "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
     }
-    if df.empty:
-        raise HTTPException(status_code=400, detail="File Excel trống hoặc không đúng định dạng (thiếu dữ liệu)")
-    # Kiểm tra dòng đầu tiên phải là tiêu đề tiếng Việt (chấp nhận có/không dấu (*))
-    first = df.iloc[0]
-    matches = 0
-    total_keys = 0
-    for k, v in trans_products.items():
-        if k in df.columns:
-            total_keys += 1
-            try:
-                def _norm_header(s: str) -> str:
-                    s = str(s or "").strip()
-                    # Bỏ "(*)" nếu có để tương thích ngược
-                    return s.replace("(*)", "").replace("( * )", "").replace("(*) ", "").strip()
-                if _norm_header(str(first[k])) == _norm_header(str(v)):
-                    matches += 1
-            except Exception:
-                pass
-    # Yêu cầu: phải khớp ít nhất 1/3 số cột hiện diện (tối thiểu 3 cột) để coi là header tiếng Việt hợp lệ
-    threshold = max(3, total_keys // 3)
-    if not (total_keys and matches >= threshold):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "File Excel thiếu hàng tiêu đề tiếng Việt (hàng 2). "
-                "Mọi file phải có 2 hàng tiêu đề: hàng 1 là tên cột kỹ thuật, hàng 2 là tên cột tiếng Việt."
-            ),
-        )
-    # Bỏ qua hàng tiêu đề tiếng Việt để tiến hành import dữ liệu
-    df = df.iloc[1:].reset_index(drop=True)
+
+    # Helper: kiểm tra 2 hàng header và bỏ hàng TV cho một DataFrame
+    def _validate_and_strip_header(df: pd.DataFrame, trans_map: dict, sheet_name: str):
+        if df.empty:
+            raise HTTPException(status_code=400, detail=f"Sheet {sheet_name} trống hoặc không đúng định dạng (thiếu dữ liệu)")
+        first = df.iloc[0]
+        matches = 0
+        total_keys = 0
+        for k, v in trans_map.items():
+            if k in df.columns:
+                total_keys += 1
+                try:
+                    def _norm_header(s: str) -> str:
+                        s = str(s or "").strip()
+                        return s.replace("(*)", "").replace("( * )", "").replace("(*) ", "").strip()
+                    if _norm_header(str(first[k])) == _norm_header(str(v)):
+                        matches += 1
+                except Exception:
+                    pass
+        threshold = max(3, total_keys // 3)
+        if not (total_keys and matches >= threshold):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Sheet {sheet_name}: thiếu hàng tiêu đề tiếng Việt (hàng 2). "
+                    "Mọi sheet phải có 2 hàng tiêu đề: hàng 1 là tên cột kỹ thuật, hàng 2 là tên cột tiếng Việt."
+                ),
+            )
+        return df.iloc[1:].reset_index(drop=True)
+
+    # Helper: sinh mã theo format ex+prefix+digits tổng độ dài 14; đảm bảo không trùng cho Products
+    import secrets, string
+    def _gen_code(prefix: str, exists_check=None, max_tries: int = 20) -> str:
+        base = "ex" + prefix
+        digits_len = max(1, 14 - len(base))
+        for _ in range(max_tries):
+            n = ''.join(secrets.choice(string.digits) for _ in range(digits_len))
+            code = base + n
+            if exists_check is None:
+                return code
+            if not exists_check(code):
+                return code
+        # fallback: vẫn trả về code cuối cùng nếu quá số lần thử
+        return code
+    # Lấy sheet Products nếu có; nếu không có, fallback sheet đầu tiên để tương thích
+    if "Products" in xls.sheet_names:
+        df_products = xls.parse("Products")
+    else:
+        df_products = xls.parse(0)
+
+    # Xác thực header cho Products
+    df = _validate_and_strip_header(df_products, trans_products, "Products")
+
     # Chỉ import Excel mới áp dụng policy; mặc định False nếu chưa set
     flags = crud.get_policy_flags(db)
     only_with_commission = bool(flags.get("only_with_commission"))
@@ -2637,15 +2661,14 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
             required_errors.append({"row": int(_)+2, "missing": missing})
             continue
 
-        # Auto-generate source_id if missing: prefer URL, then affiliate_url, else hash of title+merchant
+        # Auto-generate source_id nếu thiếu: theo format ex + 'p' + số ngẫu nhiên (độ dài tổng 14)
         if not base["source_id"]:
-            import hashlib
-            sid_src = base.get("url") or base.get("affiliate_url")
-            if sid_src:
-                base["source_id"] = hashlib.md5(str(sid_src).encode("utf-8")).hexdigest()
-            else:
-                seed = f"{base.get('title')}-{base.get('merchant')}"
-                base["source_id"] = hashlib.md5(seed.encode("utf-8")).hexdigest()
+            def _exists_in_db(sid: str) -> bool:
+                from sqlalchemy import select
+                from models import ProductOffer
+                stmt = select(ProductOffer.id).where(ProductOffer.source == "excel", ProductOffer.source_id == sid)
+                return db.execute(stmt).first() is not None
+            base["source_id"] = _gen_code("p", exists_check=_exists_in_db)
 
         # Ghi campaign_id nếu có trong file Excel
         campaign_id = row.get("campaign_id")
@@ -2737,15 +2760,126 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         crud.upsert_offer_by_source(db, data)
         imported += 1
 
-    if required_errors:
-        # Trả thông tin thống kê để người dùng biết lý do bỏ qua
-        return {
-            "ok": True,
-            "imported": imported,
-            "skipped_required": skipped_required,
-            "errors": required_errors[:50]  # tránh trả quá dài
+    # =========================
+    # IMPORT: Campaigns sheet
+    # =========================
+    imported_campaigns = 0
+    if "Campaigns" in xls.sheet_names:
+        trans_campaigns = {
+            "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "campaign_name": "Tên chiến dịch",
+            "approval_type": "Approval", "user_status": "Trạng thái của tôi", "status": "Tình trạng",
+            "start_time": "Bắt đầu", "end_time": "Kết thúc",
+            "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
+            "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
+            "description_url": "Mô tả (Web)", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+            "type": "Loại", "campaign_url": "URL chiến dịch",
         }
-    return {"ok": True, "imported": imported}
+        df_camp_raw = xls.parse("Campaigns")
+        df_camp = _validate_and_strip_header(df_camp_raw, trans_campaigns, "Campaigns")
+
+        # set dùng để tránh sinh trùng trong cùng file
+        generated_ids_camp: set[str] = set()
+        for _, row in df_camp.iterrows():
+            cid = row.get("campaign_id")
+            cid = str(cid).strip() if pd.notna(cid) else None
+            if not cid:
+                def _exists_campaign(c: str) -> bool:
+                    return crud.get_campaign_by_cid(db, c) is not None or (c in generated_ids_camp)
+                cid = _gen_code("ca", exists_check=_exists_campaign)
+                generated_ids_camp.add(cid)
+            try:
+                payload = schemas.CampaignCreate(
+                    campaign_id=cid,
+                    merchant=(str(row.get("merchant")).strip().lower() if pd.notna(row.get("merchant")) else None),
+                    name=(str(row.get("campaign_name")).strip() if pd.notna(row.get("campaign_name")) else None),
+                    status=(str(row.get("status")).strip() if pd.notna(row.get("status")) else None),
+                    approval=(str(row.get("approval_type")).strip() if pd.notna(row.get("approval_type")) else None),
+                    start_time=(str(row.get("start_time")).strip() if pd.notna(row.get("start_time")) else None),
+                    end_time=(str(row.get("end_time")).strip() if pd.notna(row.get("end_time")) else None),
+                    user_registration_status=(str(row.get("user_status")).strip() if pd.notna(row.get("user_status")) else None),
+                )
+                crud.upsert_campaign(db, payload)
+                imported_campaigns += 1
+            except Exception:
+                continue
+
+    # =========================
+    # IMPORT: Commissions sheet
+    # =========================
+    imported_commissions = 0
+    if "Commissions" in xls.sheet_names:
+        trans_commissions = {
+            "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
+            "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
+        }
+        df_comm_raw = xls.parse("Commissions")
+        df_comm = _validate_and_strip_header(df_comm_raw, trans_commissions, "Commissions")
+
+        # Nếu thiếu campaign_id thì sinh theo định dạng "exca..." (ca/ cm/ pr) → ở đây dùng "cm"
+        for _, row in df_comm.iterrows():
+            cid = row.get("campaign_id")
+            cid = str(cid).strip() if pd.notna(cid) else None
+            if not cid:
+                # Không yêu cầu uniqueness tuyệt đối với campaign_id ảo trong bảng commissions, nhưng tránh va chạm nhẹ
+                cid = _gen_code("cm")
+            try:
+                payload = schemas.CommissionPolicyCreate(
+                    campaign_id=cid,
+                    reward_type=(str(row.get("reward_type")).strip() if pd.notna(row.get("reward_type")) else None),
+                    sales_ratio=(float(row.get("sales_ratio")) if pd.notna(row.get("sales_ratio")) else None),
+                    sales_price=(float(row.get("sales_price")) if pd.notna(row.get("sales_price")) else None),
+                    target_month=(str(row.get("target_month")).strip() if pd.notna(row.get("target_month")) else None),
+                )
+                crud.upsert_commission_policy(db, payload)
+                imported_commissions += 1
+            except Exception:
+                continue
+
+    # =========================
+    # IMPORT: Promotions sheet
+    # =========================
+    imported_promotions = 0
+    if "Promotions" in xls.sheet_names:
+        trans_promotions = {
+            "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
+            "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
+        }
+        df_prom_raw = xls.parse("Promotions")
+        df_prom = _validate_and_strip_header(df_prom_raw, trans_promotions, "Promotions")
+
+        for _, row in df_prom.iterrows():
+            cid = row.get("campaign_id")
+            cid = str(cid).strip() if pd.notna(cid) else None
+            if not cid:
+                cid = _gen_code("pr")
+            try:
+                payload = schemas.PromotionCreate(
+                    campaign_id=cid,
+                    name=(str(row.get("name")).strip() if pd.notna(row.get("name")) else None),
+                    content=(str(row.get("content")).strip() if pd.notna(row.get("content")) else None),
+                    start_time=(row.get("start_time") if pd.notna(row.get("start_time")) else None),
+                    end_time=(row.get("end_time") if pd.notna(row.get("end_time")) else None),
+                    coupon=(str(row.get("coupon")).strip() if pd.notna(row.get("coupon")) else None),
+                    link=(str(row.get("link")).strip() if pd.notna(row.get("link")) else None),
+                )
+                crud.upsert_promotion(db, payload)
+                imported_promotions += 1
+            except Exception:
+                continue
+
+    result = {
+        "ok": True,
+        "imported": imported,  # backward-compatible: số sản phẩm Products
+        "campaigns": imported_campaigns,
+        "commissions": imported_commissions,
+        "promotions": imported_promotions,
+    }
+    if required_errors:
+        result.update({
+            "skipped_required": skipped_required,
+            "errors": required_errors[:50]
+        })
+    return result
 
 # --- Export sản phẩm từ DB ra file Excel ---
 @app.get(
@@ -2754,7 +2888,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     summary="Xuất Excel chuyên biệt (Products/Campaigns/Commissions/Promotions)",
     description=(
         "Xuất Excel gồm 4 sheet độc lập. Products chỉ gồm sản phẩm từ API (datafeeds/top_products) và có cột source_type; "
-        "Campaigns chỉ các campaign đã APPROVED/SUCCESSFUL; Commissions/PROMotions độc lập, không phụ thuộc sản phẩm."
+        "Campaigns chỉ các campaign đã APPROVED/SUCCESSFUL; Commissions/Promotions độc lập, không phụ thuộc sản phẩm."
     )
 )
 def export_offers_excel(
@@ -2763,7 +2897,6 @@ def export_offers_excel(
     skip: int = 0,
     limit: int = 0,  # nếu =0 thì xuất toàn bộ
     max_text_len: int | None = None,  # tuỳ chọn: giới hạn ký tự cho các trường văn bản dài
-    desc_mode: str | None = "text",  # (không còn cần thiết khi đã dùng link; để tương thích ngược)
     db: Session = Depends(get_db)
 ):
     import os, json

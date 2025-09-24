@@ -284,3 +284,126 @@ def test_export_campaigns_includes_case_variants_and_is_stable(client):
     assert set(["CAMP_A", "CAMP_B", "CAMP_C"]).issubset(set(ids1))
     # Deterministic across runs
     assert ids1 == ids2
+
+
+def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
+    # Chuẩn bị header 2 hàng cho từng sheet theo mapping trong backend
+    # Products
+    trans_products = {
+        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn (*)", "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)",
+        "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
+        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
+        "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+    }
+    p_cols = list(trans_products.keys())
+    p_head = [trans_products[c] for c in p_cols]
+    df_p = pd.DataFrame(columns=p_cols)
+    df_p.loc[0, p_cols] = p_head
+    df_p.loc[1, "source"] = "excel"
+    df_p.loc[1, "source_type"] = "excel"
+    df_p.loc[1, "merchant"] = "tikivn"
+    df_p.loc[1, "title"] = "Product Z excel"
+    df_p.loc[1, "url"] = "https://tiki.vn/z"
+    df_p.loc[1, "price"] = 99000
+    # Không cung cấp source_id -> phải auto-gen 'exp' + 11 số = 14 ký tự
+
+    # Campaigns
+    trans_campaigns = {
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "campaign_name": "Tên chiến dịch",
+        "approval_type": "Approval", "user_status": "Trạng thái của tôi", "status": "Tình trạng",
+        "start_time": "Bắt đầu", "end_time": "Kết thúc",
+        "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
+        "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
+        "description_url": "Mô tả (Web)", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
+        "type": "Loại", "campaign_url": "URL chiến dịch",
+    }
+    c_cols = list(trans_campaigns.keys())
+    c_head = [trans_campaigns[c] for c in c_cols]
+    df_c = pd.DataFrame(columns=c_cols)
+    df_c.loc[0, c_cols] = c_head
+    df_c.loc[1, "campaign_id"] = "CAMP_XL"
+    df_c.loc[1, "merchant"] = "tikivn"
+    df_c.loc[1, "campaign_name"] = "Tiki XL"
+    df_c.loc[1, "user_status"] = "APPROVED"
+    df_c.loc[1, "status"] = "running"
+
+    # Commissions
+    trans_comm = {
+        "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
+        "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
+    }
+    m_cols = list(trans_comm.keys())
+    m_head = [trans_comm[c] for c in m_cols]
+    df_m = pd.DataFrame(columns=m_cols)
+    df_m.loc[0, m_cols] = m_head
+    df_m.loc[1, "campaign_id"] = "CAMP_CMC"
+    df_m.loc[1, "reward_type"] = "CPS"
+    df_m.loc[1, "sales_ratio"] = 12.5
+    df_m.loc[1, "target_month"] = "2025-09"
+
+    # Promotions
+    trans_prom = {
+        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
+        "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
+    }
+    pr_cols = list(trans_prom.keys())
+    pr_head = [trans_prom[c] for c in pr_cols]
+    df_pr = pd.DataFrame(columns=pr_cols)
+    df_pr.loc[0, pr_cols] = pr_head
+    df_pr.loc[1, "campaign_id"] = "CAMP_PRM"
+    df_pr.loc[1, "merchant"] = "tikivn"
+    df_pr.loc[1, "name"] = "Back to school"
+    df_pr.loc[1, "content"] = "Giảm 15% đồ học tập"
+    df_pr.loc[1, "start_time"] = "2025-09-01T00:00:00"
+    df_pr.loc[1, "end_time"] = "2025-10-01T00:00:00"
+    df_pr.loc[1, "coupon"] = "BTS15"
+    df_pr.loc[1, "link"] = "https://tiki.vn/promo-bts"
+
+    p = tmp_path / "multi.xlsx"
+    with pd.ExcelWriter(p, engine="xlsxwriter") as writer:
+        df_p.to_excel(writer, sheet_name="Products", index=False)
+        df_c.to_excel(writer, sheet_name="Campaigns", index=False)
+        df_m.to_excel(writer, sheet_name="Commissions", index=False)
+        df_pr.to_excel(writer, sheet_name="Promotions", index=False)
+
+    with open(p, "rb") as f:
+        r = client.post("/offers/import-excel", files={"file": ("multi.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("imported", 0) >= 1
+    assert body.get("campaigns", 0) >= 1
+    assert body.get("commissions", 0) >= 1
+    assert body.get("promotions", 0) >= 1
+
+    # Kiểm tra dữ liệu đã vào DB
+    TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
+    with TestingSessionLocal() as db:
+        # Products: có sản phẩm excel với title "Product Z excel" và source_id 14 ký tự bắt đầu bằng 'exp'
+        items = db.query(models.ProductOffer).filter(models.ProductOffer.source == "excel", models.ProductOffer.title == "Product Z excel").all()
+        assert items, "Không thấy product vừa import"
+        sid = items[0].source_id
+        assert isinstance(sid, str) and len(sid) == 14 and sid.startswith("exp")
+
+        # Campaigns
+        camp = crud.get_campaign_by_cid(db, "CAMP_XL")
+        assert camp is not None and (camp.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
+
+        # Commissions
+        cm = db.query(models.CommissionPolicy).filter(
+            models.CommissionPolicy.campaign_id == "CAMP_CMC",
+            models.CommissionPolicy.reward_type == "CPS",
+            models.CommissionPolicy.target_month == "2025-09",
+        ).first()
+        assert cm is not None
+
+        # Promotions
+        pr = db.query(models.Promotion).filter(
+            models.Promotion.campaign_id == "CAMP_PRM",
+            models.Promotion.name == "Back to school",
+        ).first()
+        assert pr is not None
