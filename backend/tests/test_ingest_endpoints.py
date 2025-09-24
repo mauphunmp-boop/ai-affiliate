@@ -169,7 +169,7 @@ def test_provider_registry_unsupported_provider_error(client):
     assert "chưa được hỗ trợ" in (body.get("detail") or "")
 
 
-def test_ingest_promotions_creates_promotions_and_offers(client):
+def test_ingest_promotions_saves_promotions_only(client):
     # Ensure campaigns are synced so APPROVED campaign exists in DB (mock CAMP3 for tikivn)
     r_sync = client.post("/ingest/campaigns/sync", json={
         "provider": "accesstrade",
@@ -182,16 +182,14 @@ def test_ingest_promotions_creates_promotions_and_offers(client):
     # Ingest promotions for tikivn (alias to tiki for API fetch)
     r = client.post("/ingest/promotions", json={
         "provider": "accesstrade",
-        "merchant": "tikivn",
-        "create_offers": True,
-        "check_urls": False
+        "merchant": "tikivn"
     })
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True
     assert isinstance(body.get("promotions"), int) and body.get("promotions") >= 1
 
-    # Verify promotions upserted and at least one offer created from promotions
+    # Verify promotions upserted and NO offer auto-created from promotions anymore
     TestingSessionLocal = getattr(app.state, "TestingSessionLocal", None)
     assert TestingSessionLocal is not None, "TestingSessionLocal not found on app.state"
     from models import Promotion, ProductOffer
@@ -203,7 +201,7 @@ def test_ingest_promotions_creates_promotions_and_offers(client):
             ProductOffer.source_type == "promotions",
             ProductOffer.merchant == "tikivn"
         ).count()
-        assert offers_from_promotions >= 1
+        assert offers_from_promotions == 0
 
 
 def test_ingest_top_products_creates_offers(client):
@@ -240,3 +238,31 @@ def test_ingest_top_products_creates_offers(client):
             ProductOffer.merchant == "tikivn"
         ).count()
         assert top_count >= 1
+
+
+def test_ingest_top_products_no_merchant_verbose_returns_skipped(client):
+    # Sync campaigns first to have running & approved mock campaigns
+    r_sync = client.post("/ingest/campaigns/sync", json={
+        "provider": "accesstrade",
+        "statuses": ["running"],
+        "only_my": True,
+        "enrich_user_status": False
+    })
+    assert r_sync.status_code == 200
+
+    # No merchant provided: should run across approved-running merchants and include skipped when verbose=true
+    r = client.post("/ingest/top-products", json={
+        "provider": "accesstrade",
+        "limit_per_page": 50,
+        "max_pages": 1,
+        "check_urls": False,
+        "verbose": True
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("ok") is True
+    assert isinstance(body.get("imported"), int)
+    assert isinstance(body.get("by_merchant"), dict)
+    # skipped_merchants should exist in verbose mode albeit possibly empty
+    assert "skipped_merchants" in body
+    assert isinstance(body.get("skipped_merchants"), list)

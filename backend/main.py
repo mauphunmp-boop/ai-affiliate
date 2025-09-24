@@ -4,7 +4,7 @@ import os, hmac, hashlib, base64, json, time, asyncio
 from urllib.parse import urlparse, quote_plus
 from typing import Optional, Dict, List, Any
 
-from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
 from providers import ProviderRegistry, ProviderOps
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -663,13 +663,13 @@ class IngestAllDatafeedsReq(BaseModel):
         - update_from/update_to, price_from/to, discount_*: chuyển tiếp xuống API AT nếu hỗ trợ.
     - limit_per_page: kích thước trang khi gọi ra Accesstrade (mặc định 100)
     - max_pages: chặn vòng lặp vô hạn nếu API trả bất thường (mặc định 2000 trang)
-    - throttle_ms: nghỉ giữa các lần gọi để tôn trọng rate-limit (mặc định 0ms)
+    - throttle_ms: nghỉ giữa các lần gọi để tôn trọng rate-limit (mặc định 200ms)
     - check_urls: nếu True mới kiểm tra link sống (mặc định False).
     """
     params: Dict[str, str] | None = None
     limit_per_page: int = 100
     max_pages: int = 2000
-    throttle_ms: int = 0
+    throttle_ms: int = 200
     check_urls: bool = False
     verbose: bool = False
     model_config = {
@@ -679,7 +679,7 @@ class IngestAllDatafeedsReq(BaseModel):
                     "params": {"merchant": "tikivn"},
                     "limit_per_page": 100,
                     "max_pages": 1,
-                    "throttle_ms": 0,
+                    "throttle_ms": 200,
                     "check_urls": False,
                     "verbose": False
                 }
@@ -702,7 +702,7 @@ class CampaignsSyncReq(BaseModel):
     limit_per_page: int = 50
     page_concurrency: int = 6
     window_pages: int = 10
-    throttle_ms: int = 300
+    throttle_ms: int = 200
     merchant: str | None = None
     model_config = {
         "json_schema_extra": {
@@ -724,20 +724,21 @@ class IngestV2PromotionsReq(BaseModel):
     """
     Ingest khuyến mãi (offers_informations) theo merchant đã duyệt.
     - merchant: nếu truyền, chỉ ingest đúng merchant này; nếu bỏ trống sẽ chạy cho tất cả merchant active.
-    - create_offers: nếu True, sẽ map mỗi promotion thành 1 offer tối thiểu (title/url/affiliate_url/image).
-    - check_urls: nếu True mới kiểm tra link sống (mặc định False).
+    - Lưu ý: KHÔNG còn tự tạo ProductOffer từ Promotions. Trường create_offers đã bị ngưng dùng và sẽ bị bỏ qua.
+    - check_urls: (KHÔNG áp dụng cho Promotions nữa) giữ để tương thích nhưng bị bỏ qua.
     """
     merchant: str | None = None
-    create_offers: bool = True
+    # deprecated: giữ để tương thích request cũ, nhưng bị bỏ qua
+    create_offers: bool = False
+    # deprecated for promotions path, ignored
     check_urls: bool = False
     verbose: bool = False
+    throttle_ms: int = 200
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "merchant": "tikivn",
-                    "create_offers": True,
-                    "check_urls": False
+                    "merchant": "tikivn"
                 }
             ]
         }
@@ -752,14 +753,14 @@ class IngestV2TopProductsReq(BaseModel):
     - throttle_ms: nghỉ giữa các lần gọi
     - check_urls: nếu True mới kiểm tra link sống (mặc định False).
     """
-    merchant: str
+    merchant: str | None = None
     date_from: str | None = None
     date_to: str | None = None
     check_urls: bool = False
     verbose: bool = False
     limit_per_page: int = 100
     max_pages: int = 200
-    throttle_ms: int = 0
+    throttle_ms: int = 200
     model_config = {
         "json_schema_extra": {
             "examples": [
@@ -982,6 +983,10 @@ def list_offers_api(
     merchant: str | None = None,
     skip: int = 0,
     limit: int = 50,
+    category: str | None = Query(
+        "offers",
+        description="Nhóm dữ liệu: offers | top-products. Với promotions/commissions, dùng /catalog/*"
+    ),
     db: Session = Depends(get_db)
 ):
     """
@@ -989,8 +994,17 @@ def list_offers_api(
     - `merchant`: lọc theo tên merchant (vd: `shopee`, `lazada`, `tiki`)  
     - `skip`: số bản ghi bỏ qua (offset)  
     - `limit`: số bản ghi tối đa trả về  
+    - `category`: 'offers' (mặc định) hoặc 'top-products'. Với 'promotions' hay 'commissions' → dùng /catalog/promotions hoặc /catalog/commissions.
     """
-    rows = crud.list_offers(db, merchant=merchant, skip=skip, limit=limit)
+    cat = (category or "offers").strip().lower()
+    if cat not in ("offers", "top-products", "top_products"):
+        raise HTTPException(status_code=400, detail="category không hợp lệ cho /offers. Dùng /catalog/<category> cho promotions/commissions")
+
+    if cat in ("top-products", "top_products"):
+        rows = crud.list_offers(db, merchant=merchant, skip=skip, limit=limit, source_type="top_products")
+    else:
+        # 'offers' mặc định: loại trừ các nhóm không phải catalog chính
+        rows = crud.list_offers(db, merchant=merchant, skip=skip, limit=limit, exclude_source_types=["top_products", "promotions"])
 
     out: list[dict] = []
     for o in rows:
@@ -1762,23 +1776,39 @@ async def ingest_v2_promotions(
     req: IngestV2PromotionsReq,
     db: Session = Depends(get_db),
 ):
-    from accesstrade_service import fetch_promotions, fetch_active_campaigns, _check_url_alive
+    from accesstrade_service import fetch_promotions, fetch_active_campaigns, _log_jsonl
     imported_promos = 0
-    imported_offers = 0
 
-    # 0) Xác định merchant cần chạy: 1 merchant hoặc tất cả merchant đang active
-    active = await fetch_active_campaigns(db)  # {campaign_id: merchant}
-    merchants = set(active.values())
-    if not merchants:
-        # Fallback: từ DB
-        merchants = {
-            (c.merchant or "").lower()
-            for c in db.query(models.Campaign)
-                        .filter(models.Campaign.status == "running")
-                        .filter(models.Campaign.user_registration_status.in_(["APPROVED","SUCCESSFUL"]))
-                        .all()
-            if c.merchant
-        }
+    # Helper: phân loại chuỗi theo yêu cầu
+    def _classify_str(rec: dict, key: str) -> str | None:
+        if key in rec:
+            v = rec.get(key)
+            s = (str(v).strip() if v is not None else "")
+            return s if s else "NO_DATA"
+        return "API_MISSING"
+
+    # 0) Tập merchant cần chạy = theo yêu cầu hoặc theo DB các campaign đã APPROVED/SUCCESSFUL
+    #    KHÔNG bắt buộc campaign đang running đối với việc lưu promotions
+    #    Lưu ý: KHÔNG filter theo req.merchant ở đây để tránh miss do alias (vd tikivn ↔ tiki)
+    approved_rows = (
+        db.query(models.Campaign)
+        .filter(func.upper(func.trim(models.Campaign.user_registration_status)).in_(["APPROVED", "SUCCESSFUL"]))  # type: ignore
+        .all()
+    )
+
+    # Map merchant -> danh sách campaign đã APPROVED (ưu tiên chọn status=running sau này)
+    approved_by_merchant: dict[str, list[models.Campaign]] = {}
+    for c in approved_rows:
+        if not c.merchant:
+            continue
+        mkey = c.merchant.lower()
+        approved_by_merchant.setdefault(mkey, []).append(c)
+
+    merchants: set[str] = set(approved_by_merchant.keys())
+    if not merchants and not req.merchant:
+        # Fallback mềm: nếu DB chưa có dữ liệu user_status (lần đầu sync), lấy merchants từ campaigns running
+        active = await fetch_active_campaigns(db)  # {cid: merchant}
+        merchants = {m for m in active.values() if m}
     if req.merchant:
         merchants = {req.merchant.strip().lower()}
 
@@ -1787,110 +1817,67 @@ async def ingest_v2_promotions(
         _alias = {"lazadacps": "lazada", "tikivn": "tiki"}
         m_fetch = _alias.get(m, m)
         promos = await fetch_promotions(db, m_fetch) or []
-        # upsert bảng promotions
+
+        # Chọn campaign_id đã APPROVED & RUNNING cho merchant này
+        cid_candidates = approved_by_merchant.get(m, []) or approved_by_merchant.get(m_fetch, [])
+        cid_pick: str | None = None
+        for row in cid_candidates:
+            if (row.status or "").lower() == "running":
+                cid_pick = row.campaign_id
+                break
+
+        if not cid_pick:
+            # Không có campaign APPROVED đang chạy cho merchant này → không lưu promotions, chỉ log
+            _log_jsonl("promotions.jsonl", {
+                "endpoint": "promotions",
+                "merchant": m,
+                "ok": True,
+                "items_count": len(promos),
+                "skip_reason": "no_running_approved_campaign",
+            })
+            continue
+
+        # upsert bảng promotions (CHỈ khi có campaign đã APPROVED)
         for p in promos:
             try:
-                # map campaign_id từ merchant
-                # ưu tiên exact, nếu không có thì bỏ trống
-                campaign_id = None
-                # Ưu tiên exact theo m hoặc m_fetch
-                for cid, mm in active.items():
-                    mm_l = (mm or "").lower()
-                    if mm_l == m or mm_l == m_fetch:
-                        campaign_id = cid
-                        break
-                # Nếu chưa khớp, thử suffix/contains (đỡ lệch alias)
-                if not campaign_id:
-                    for cid, mm in active.items():
-                        mm_l = (mm or "").lower()
-                        if mm_l.endswith(m) or f"_{m}" in mm_l or (m in mm_l):
-                            campaign_id = cid
-                            break
-                if not campaign_id and m_fetch != m:
-                    for cid, mm in active.items():
-                        mm_l = (mm or "").lower()
-                        if mm_l.endswith(m_fetch) or f"_{m_fetch}" in mm_l or (m_fetch in mm_l):
-                            campaign_id = cid
-                            break
+                # Phân loại các trường chuỗi
+                name_val = _classify_str(p, "name")
+                # content ưu tiên content; nếu thiếu content nhưng có description thì dùng description thực
+                if ("content" not in p or not (p.get("content") or "").strip()) and (p.get("description") or "").strip():
+                    content_val = str(p.get("description")).strip()
+                else:
+                    content_val = _classify_str(p, "content")
+                coupon_val = _classify_str(p, "coupon")
+                # link ưu tiên 'link' > 'url'; nếu cả hai thiếu → phân loại theo key
+                if ("link" not in p or not (p.get("link") or "").strip()) and (p.get("url") or "").strip():
+                    link_val = str(p.get("url")).strip()
+                else:
+                    link_val = _classify_str(p, "link")
+
+                start_time = p.get("start_time")
+                end_time = p.get("end_time")
 
                 crud.upsert_promotion(db, schemas.PromotionCreate(
-                    campaign_id=campaign_id or "",
-                    name=p.get("name"),
-                    content=p.get("content") or p.get("description"),
-                    start_time=p.get("start_time"),
-                    end_time=p.get("end_time"),
-                    coupon=p.get("coupon"),
-                    link=p.get("link"),
+                    campaign_id=cid_pick,
+                    name=name_val,
+                    content=content_val,
+                    start_time=start_time,
+                    end_time=end_time,
+                    coupon=coupon_val,
+                    link=link_val,
                 ))
                 imported_promos += 1
 
-                if req.create_offers:
-                    # map promotion -> offer tối thiểu
-                    title = p.get("name") or "Khuyến mãi"
-                    link = p.get("link") or p.get("url")
-                    aff = p.get("aff_link")
-                    img = p.get("image") or p.get("thumb") or p.get("banner")
-
-                    # CHO PHÉP TẠO OFFER KHI CHỈ CÓ aff_link
-                    if not link and not aff:
-                        logger.debug("[PROMO] skip: no link/aff for %s (merchant=%s)", title, m)
-                        continue
-
-                    url_to_check = link or aff
-
-                    # (policy) chỉ check khi bật cờ
-                    alive = True if not req.check_urls else await _check_url_alive(str(url_to_check or ""))
-                    if not alive:
-                        logger.debug("[PROMO] skip: dead url %s", url_to_check)
-                        continue
-
-                    # source_id cố định theo link/aff_link để idempotent
-                    sid_base = (link or aff or "").encode("utf-8")
-                    sid = hashlib.md5(sid_base).hexdigest()
-                    extra = {
-                        "source_type": "promotions",
-                        "raw": p,
-                    }
-                    # Chỉ tạo offer nếu campaign đã duyệt (APPROVED)
-                    try:
-                        _row = crud.get_campaign_by_cid(db, campaign_id) if campaign_id else None
-                        _user = (_row.user_registration_status or "").upper() if _row else ""
-                        if _user == "SUCCESSFUL":
-                            _user = "APPROVED"
-                        if not _row or _user != "APPROVED":
-                            continue
-                    except Exception:
-                        continue
-
-                    payload = schemas.ProductOfferCreate(
-                        source="accesstrade",
-                        source_id=f"promo:{m}:{sid}",
-                        merchant=m,
-                        title=title,
-                        url=link,
-                        affiliate_url=aff,
-                        image_url=img,
-                        price=None,
-                        currency="VND",
-                        campaign_id=campaign_id,
-                        source_type="promotions",
-                        # eligible_commission = campaign đang chạy & user APPROVED
-                        eligible_commission=bool(
-                            _row
-                            and _row.status == "running"
-                            and (
-                                (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
-                            )
-                        ),
-                        affiliate_link_available=bool(aff),
-                        extra=json.dumps(extra, ensure_ascii=False),
-                    )
-                    crud.upsert_offer_by_source(db, payload)
-                    imported_offers += 1
+                # Không còn auto tạo ProductOffer từ Promotions
             except Exception as e:
                 logger.debug("Skip promotion/offer upsert: %s", e)
 
-    return {"ok": True, "promotions": imported_promos, "offers_from_promotions": imported_offers}
+        # nghỉ giữa các merchant nếu có cấu hình throttle_ms
+        sleep_ms = getattr(req, "throttle_ms", 0) or 0
+        if sleep_ms:
+            await asyncio.sleep(sleep_ms / 1000.0)
+
+    return {"ok": True, "promotions": imported_promos}
 
 """Legacy provider-specific routes have been removed. Use unified endpoints."""
 
@@ -1900,7 +1887,7 @@ async def ingest_v2_top_products(
 ):
     from accesstrade_service import fetch_top_products, fetch_active_campaigns, _check_url_alive
 
-    # 0) map merchant -> campaign_id để gắn campaign_id cho offer
+    # 0) Lấy map campaign đang chạy {campaign_id: merchant}
     active = await fetch_active_campaigns(db)  # {campaign_id: merchant}
     if not active:
         active = {
@@ -1911,126 +1898,167 @@ async def ingest_v2_top_products(
                         .all()
             if c.campaign_id and c.merchant
         }
-    m_req = (req.merchant or "").lower()
-    _alias = {"lazadacps": "lazada", "tikivn": "tiki"}
-    m_fetch = _alias.get(m_req, m_req)
 
-    campaign_id = None
-    for cid, mm in active.items():
-        mm_l = (mm or "").lower()
-        if mm_l == m_req or mm_l == m_fetch:
-            campaign_id = cid
-            break
-    if not campaign_id:
-        for cid, mm in active.items():
-            mm_l = (mm or "").lower()
-            if mm_l.endswith(m_req) or f"_{m_req}" in mm_l or (m_req in mm_l):
-                campaign_id = cid
-                break
-    if not campaign_id and m_fetch != m_req:
-        for cid, mm in active.items():
-            mm_l = (mm or "").lower()
-            if mm_l.endswith(m_fetch) or f"_{m_fetch}" in mm_l or (m_fetch in mm_l):
-                campaign_id = cid
-                break
+    # Xây danh sách merchants đã APPROVED & running
+    approved_running_merchants: set[str] = set()
+    for cid, m in active.items():
+        row = crud.get_campaign_by_cid(db, cid)
+        if not row:
+            continue
+        us = (row.user_registration_status or "").upper()
+        if us == "SUCCESSFUL":
+            us = "APPROVED"
+        if us == "APPROVED" and (row.status or "").lower() == "running":
+            approved_running_merchants.add((m or "").lower())
 
-    # DEFAULT date range: 7 ngày gần nhất nếu không truyền
+    # Toàn bộ merchants đang active (chỉ xét running theo API)
+    all_active_merchants: set[str] = { (m or "").lower() for m in active.values() if m }
+
+    # Nếu truyền merchant → chỉ chạy merchant đó; nếu không → chạy tất cả merchant đã approved_running
+    if req.merchant:
+        merchants = {req.merchant.strip().lower()}
+    else:
+        merchants = set(approved_running_merchants)
+
+    # DEFAULT date range: 30 ngày gần nhất nếu không truyền
     if not req.date_from or not req.date_to:
         from datetime import datetime, timedelta, UTC
         _to = datetime.now(UTC).date()
-        _from = _to - timedelta(days=7)
+        _from = _to - timedelta(days=30)
         date_from_use = req.date_from or _from.strftime("%Y-%m-%d")
         date_to_use = req.date_to or _to.strftime("%Y-%m-%d")
     else:
         date_from_use = req.date_from
         date_to_use = req.date_to
 
-    page = 1
-    imported = 0
-    while page <= max(1, req.max_pages):
-        items = await fetch_top_products(
-            db,
-            merchant=m_fetch,  # dùng alias để gọi API ổn định
-            date_from=date_from_use,
-            date_to=date_to_use,
-            page=page,
-            limit=req.limit_per_page
-        )
-        if not items:
-            break
+    imported_total = 0
+    result_by_merchant: dict[str, int] = {}
+    skipped_merchants: set[str] = set()
 
-        for it in items:
-            try:
-                title = it.get("name") or "Sản phẩm"
-                link = it.get("link") or it.get("url")
-                aff = it.get("aff_link")
-                img = it.get("image") or it.get("thumb")
-                price = it.get("price")
-                product_id = it.get("product_id") or it.get("id")
+    _alias = {"lazadacps": "lazada", "tikivn": "tiki"}
 
-                if not link and not aff:
-                    logger.debug("[TOP] skip: no link/aff for %s", title)
-                    continue
-                # Ưu tiên link gốc cho trường url (affiliate_url sẽ giữ aff)
-                url_to_check = link or aff
+    for m_req in sorted(merchants):
+        m_fetch = _alias.get(m_req, m_req)
 
-                # (policy) chỉ check khi bật cờ
-                alive = True if not req.check_urls else await _check_url_alive(str(url_to_check or ""))
-                if not alive:
-                    logger.debug("[TOP] skip: dead url %s", url_to_check)
-                    continue
+        # map merchant -> campaign_id đang chạy
+        campaign_id = None
+        for cid, mm in active.items():
+            mm_l = (mm or "").lower()
+            if mm_l == m_req or mm_l == m_fetch:
+                campaign_id = cid
+                break
+        if not campaign_id:
+            for cid, mm in active.items():
+                mm_l = (mm or "").lower()
+                if mm_l.endswith(m_req) or f"_{m_req}" in mm_l or (m_req in mm_l):
+                    campaign_id = cid
+                    break
+        if not campaign_id and m_fetch != m_req:
+            for cid, mm in active.items():
+                mm_l = (mm or "").lower()
+                if mm_l.endswith(m_fetch) or f"_{m_fetch}" in mm_l or (m_fetch in mm_l):
+                    campaign_id = cid
+                    break
 
-                # idempotent theo product_id nếu có, nếu không theo link
-                base_key = str(product_id or url_to_check)
-                sid = hashlib.md5(base_key.encode("utf-8")).hexdigest()
+        if not campaign_id:
+            # Không tìm thấy campaign đang chạy cho merchant này
+            skipped_merchants.add(m_req)
+            continue
 
-                extra = {
-                    "source_type": "top_products",
-                    "raw": it,
-                }
-                # Chỉ tạo offer nếu campaign APPROVED (API bỏ qua policy nhưng vẫn yêu cầu APPROVED)
+        page = 1
+        imported = 0
+        while page <= max(1, req.max_pages):
+            items = await fetch_top_products(
+                db,
+                merchant=m_fetch,
+                date_from=date_from_use,
+                date_to=date_to_use,
+                page=page,
+                limit=req.limit_per_page
+            )
+            if not items:
+                break
+
+            for it in items:
                 try:
-                    _row = crud.get_campaign_by_cid(db, campaign_id) if campaign_id else None
-                    _user = (_row.user_registration_status or "").upper() if _row else ""
-                    if not _row or _user not in ("APPROVED", "SUCCESSFUL"):
+                    title = it.get("name") or "Sản phẩm"
+                    link = it.get("link") or it.get("url")
+                    aff = it.get("aff_link")
+                    img = it.get("image") or it.get("thumb")
+                    price = it.get("price")
+                    product_id = it.get("product_id") or it.get("id")
+
+                    if not link and not aff:
+                        logger.debug("[TOP] skip: no link/aff for %s", title)
                         continue
-                except Exception:
-                    continue
+                    url_to_check = link or aff
 
-                payload = schemas.ProductOfferCreate(
-                    source="accesstrade",
-                    source_id=f"top:{req.merchant}:{sid}",
-                    merchant=req.merchant,
-                    title=title,
-                    url=link or aff,
-                    affiliate_url=aff,
-                    image_url=img,
-                    price=price,
-                    currency="VND",
-                    campaign_id=campaign_id,
-                    source_type="top_products",
-                    # eligible_commission = campaign đang chạy & user APPROVED/SUCCESSFUL
-                    eligible_commission=bool(
-                        _row
-                        and _row.status == "running"
-                        and (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
-                    ),
-                    affiliate_link_available=bool(aff),
-                    product_id=str(product_id) if product_id is not None else None,
-                    extra=json.dumps(extra, ensure_ascii=False),
-                )
+                    alive = True if not req.check_urls else await _check_url_alive(str(url_to_check or ""))
+                    if not alive:
+                        logger.debug("[TOP] skip: dead url %s", url_to_check)
+                        continue
 
-                crud.upsert_offer_by_source(db, payload)
-                imported += 1
-            except Exception as e:
-                logger.debug("Skip top_product upsert: %s", e)
+                    base_key = str(product_id or url_to_check)
+                    sid = hashlib.md5(base_key.encode("utf-8")).hexdigest()
 
-        page += 1
-        sleep_ms = getattr(req, "throttle_ms", 0) or 0
-        if sleep_ms:
-            await asyncio.sleep(sleep_ms / 1000.0)
+                    extra = {
+                        "source_type": "top_products",
+                        "raw": it,
+                    }
+                    try:
+                        _row = crud.get_campaign_by_cid(db, campaign_id) if campaign_id else None
+                        _user = (_row.user_registration_status or "").upper() if _row else ""
+                        if not _row or _user not in ("APPROVED", "SUCCESSFUL"):
+                            continue
+                    except Exception:
+                        continue
 
-    return {"ok": True, "imported": imported, "merchant": req.merchant}
+                    payload = schemas.ProductOfferCreate(
+                        source="accesstrade",
+                        source_id=f"top:{m_req}:{sid}",
+                        merchant=m_req,
+                        title=title,
+                        url=link or aff,
+                        affiliate_url=aff,
+                        image_url=img,
+                        price=price,
+                        currency="VND",
+                        campaign_id=campaign_id,
+                        source_type="top_products",
+                        eligible_commission=bool(
+                            _row and _row.status == "running" and (_row.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
+                        ),
+                        affiliate_link_available=bool(aff),
+                        product_id=str(product_id) if product_id is not None else None,
+                        extra=json.dumps(extra, ensure_ascii=False),
+                    )
+
+                    crud.upsert_offer_by_source(db, payload)
+                    imported += 1
+                except Exception as e:
+                    logger.debug("Skip top_product upsert: %s", e)
+
+            page += 1
+            sleep_ms = getattr(req, "throttle_ms", 0) or 0
+            if sleep_ms:
+                await asyncio.sleep(sleep_ms / 1000.0)
+
+        imported_total += imported
+        result_by_merchant[m_req] = imported
+
+    resp = {"ok": True, "imported": imported_total, "by_merchant": result_by_merchant}
+    if req.verbose:
+        # Nếu không truyền merchant: coi các merchant active nhưng không approved là bị bỏ qua
+        # Nếu có truyền merchant cụ thể: thêm vào skipped nếu merchant đó không thuộc approved_running
+        skipped = set(skipped_merchants)
+        if not req.merchant:
+            skipped.update(all_active_merchants - approved_running_merchants)
+        else:
+            m_norm = req.merchant.strip().lower()
+            if m_norm not in approved_running_merchants:
+                skipped.add(m_norm)
+        resp["skipped_merchants"] = sorted(skipped)
+    return resp
 
 # =============================================
 # Unified provider-agnostic ingest endpoints 🌐
@@ -2121,20 +2149,15 @@ async def ingest_campaigns_sync_unified(
     description=(
         "Nhập khuyến mãi theo merchant.\n\n"
         "- Bắt buộc: (không có).\n"
-        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), merchant (lọc theo merchant), create_offers (mặc định true), check_urls (mặc định false).\n\n"
+    "- Tuỳ chọn: provider (mặc định \"accesstrade\"), merchant (lọc theo merchant), throttle_ms (mặc định 200ms). create_offers/check_urls đã bị ngưng dùng và sẽ bị bỏ qua.\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"create_offers\": true\n}"
+        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\"\n}"
     )
 )
 async def ingest_promotions_unified(
     req: PromotionsUnifiedReq = Body(
         ...,
-        examples={
-            "default": {
-                "summary": "Theo merchant",
-                "value": {"provider": "accesstrade", "merchant": "tikivn", "create_offers": True}
-            }
-        }
+        example={"provider": "accesstrade", "merchant": "tikivn"}
     ),
     db: Session = Depends(get_db)
 ):
@@ -2150,7 +2173,7 @@ async def ingest_promotions_unified(
     summary="Ingest top products (provider-agnostic)",
     description=(
         "Nhập sản phẩm bán chạy theo merchant.\n\n"
-        "- Bắt buộc: merchant.\n"
+        "- Bắt buộc: (không có). Nếu không truyền merchant, hệ thống sẽ chạy cho TẤT CẢ merchant có campaign đang chạy và đã duyệt (APPROVED/SUCCESSFUL).\n"
         "- Tuỳ chọn: provider (mặc định \"accesstrade\"), date_from/date_to (YYYY-MM-DD), limit_per_page (<=100),\n"
         "  max_pages, throttle_ms, check_urls (mặc định false), verbose.\n\n"
         "Ví dụ body JSON:\n"
@@ -2182,8 +2205,8 @@ async def ingest_top_products_unified(
     description=(
         "Gọi datafeeds cho tất cả merchant đã duyệt.\n\n"
         "- Bắt buộc: (không có).\n"
-        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), params (truyền xuống API AT), limit_per_page (mặc định 100),\n"
-        "  max_pages (mặc định 2000), throttle_ms (mặc định 0), check_urls (mặc định false), verbose.\n\n"
+    "- Tuỳ chọn: provider (mặc định \"accesstrade\"), params (truyền xuống API AT), limit_per_page (mặc định 100),\n"
+    "  max_pages (mặc định 2000), throttle_ms (mặc định 200), check_urls (mặc định false), verbose.\n\n"
         "Ví dụ body JSON:\n"
         "{\n  \"provider\": \"accesstrade\",\n  \"params\": {\"merchant\": \"tikivn\"},\n  \"max_pages\": 1\n}"
     )
@@ -2323,13 +2346,45 @@ def update_offer_api(
     "/offers/{offer_id}",
     tags=["Offers 🛒"],
     summary="Xoá 1 sản phẩm",
-    description="Xoá một sản phẩm trong DB theo ID."
+    description=(
+        "Xoá một bản ghi theo ID trong nhóm được chọn.\n\n"
+        "- category: offers (mặc định) | top-products | promotions | commissions"
+    )
 )
-def delete_offer_api(offer_id: int, db: Session = Depends(get_db)):
-    obj = crud.delete_offer(db, offer_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Offer not found")
-    return {"ok": True, "deleted_id": offer_id}
+def delete_offer_api(
+    offer_id: int,
+    category: str | None = Query("offers", description="offers | top-products | promotions | commissions"),
+    campaign_id: str | None = Query(None, description="Xoá theo campaign_id (áp dụng cho promotions/commissions và cả offers nguồn promotions)"),
+    db: Session = Depends(get_db)
+):
+    cat = (category or "offers").strip().lower()
+    if cat in ("offers", "top-products", "top_products"):
+        # Cho phép xoá theo campaign_id đối với các offer tạo từ promotions (source_type='promotions')
+        if campaign_id:
+            deleted = crud.delete_offers_by_filter(db, source_type="promotions", campaign_id=campaign_id)
+            return {"ok": True, "deleted": deleted, "category": "offers", "campaign_id": campaign_id}
+        obj = crud.delete_offer(db, offer_id)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Offer not found")
+        return {"ok": True, "deleted_id": offer_id, "category": "top-products" if cat.startswith("top") else "offers"}
+    elif cat == "promotions":
+        if campaign_id:
+            deleted = crud.delete_promotions_by_campaign(db, campaign_id)
+            return {"ok": True, "deleted": deleted, "category": "promotions", "campaign_id": campaign_id}
+        obj = crud.delete_promotion(db, offer_id)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Promotion not found")
+        return {"ok": True, "deleted_id": offer_id, "category": "promotions"}
+    elif cat == "commissions":
+        if campaign_id:
+            deleted = crud.delete_commission_policies_by_campaign(db, campaign_id)
+            return {"ok": True, "deleted": deleted, "category": "commissions", "campaign_id": campaign_id}
+        obj = crud.delete_commission_policy(db, offer_id)
+        if not obj:
+            raise HTTPException(status_code=404, detail="Commission policy not found")
+        return {"ok": True, "deleted_id": offer_id, "category": "commissions"}
+    else:
+        raise HTTPException(status_code=400, detail="category không hợp lệ")
 
 # --- API cleanup: xóa sản phẩm có link chết ---
 @app.delete(
@@ -2505,12 +2560,71 @@ async def check_offer_status(offer_id: int, db: Session = Depends(get_db)):
 @app.delete(
     "/offers",
     tags=["Offers 🛒"],
-    summary="Xoá toàn bộ sản phẩm",
-    description="**Cảnh báo:** Xoá tất cả sản phẩm trong DB."
+    summary="Xoá dữ liệu theo nhóm",
+    description=(
+        "Xoá tất cả bản ghi trong nhóm được chọn.\n\n"
+        "- category: offers (mặc định) | top-products | promotions | commissions"
+    )
 )
-def delete_all_offers_api(db: Session = Depends(get_db)):
-    count = crud.delete_all_offers(db)
-    return {"ok": True, "deleted": count}
+def delete_all_offers_api(
+    category: str | None = Query("offers", description="offers | top-products | promotions | commissions"),
+    campaign_id: str | None = Query(None, description="Xoá theo campaign_id (tuỳ chọn)"),
+    db: Session = Depends(get_db)
+):
+    cat = (category or "offers").strip().lower()
+    deleted = 0
+    if cat in ("offers", "top-products", "top_products"):
+        if cat in ("top-products", "top_products"):
+            deleted = crud.delete_offers_by_filter(db, source_type="top_products", campaign_id=campaign_id)
+            effective_cat = "top-products"
+        else:
+            # Xoá tất cả nhưng loại trừ top_products & promotions để tránh xoá nhầm nhóm khác
+            if campaign_id:
+                # Chỉ xoá các offer thuộc campaign cụ thể (không bao gồm top_products/promotions)
+                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products", "promotions"], campaign_id=campaign_id)
+            else:
+                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products", "promotions"])
+            effective_cat = "offers"
+    elif cat == "promotions":
+        deleted = crud.delete_promotions_by_campaign(db, campaign_id) if campaign_id else crud.delete_all_promotions(db)
+        effective_cat = "promotions"
+    elif cat == "commissions":
+        deleted = crud.delete_commission_policies_by_campaign(db, campaign_id) if campaign_id else crud.delete_all_commission_policies(db)
+        effective_cat = "commissions"
+    else:
+        raise HTTPException(status_code=400, detail="category không hợp lệ")
+    return {"ok": True, "deleted": deleted, "category": effective_cat}
+
+# ---- Catalog listing for other categories ----
+@app.get(
+    "/catalog/promotions",
+    tags=["Offers 🛒"],
+    response_model=list[schemas.PromotionOut],
+    summary="Liệt kê promotions",
+    description="Danh sách promotions trong DB (phân trang)."
+)
+def list_catalog_promotions(
+    skip: int = 0,
+    limit: int = 50,
+    campaign_id: str | None = Query(None, description="Lọc theo campaign_id (tuỳ chọn)"),
+    db: Session = Depends(get_db)
+):
+    return crud.list_promotions(db, skip=skip, limit=limit, campaign_id=campaign_id)
+
+@app.get(
+    "/catalog/commissions",
+    tags=["Offers 🛒"],
+    response_model=list[schemas.CommissionPolicyOut],
+    summary="Liệt kê commission policies",
+    description="Danh sách chính sách hoa hồng theo chiến dịch (phân trang)."
+)
+def list_catalog_commissions(
+    skip: int = 0,
+    limit: int = 50,
+    campaign_id: str | None = Query(None, description="Lọc theo campaign_id (tuỳ chọn)"),
+    db: Session = Depends(get_db)
+):
+    return crud.list_commission_policies(db, skip=skip, limit=limit, campaign_id=campaign_id)
 
 # --- Import sản phẩm từ Excel ---
 import pandas as pd

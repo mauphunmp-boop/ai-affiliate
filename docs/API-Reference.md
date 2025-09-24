@@ -174,7 +174,13 @@ Vietnamese header:
 
 Notes:
 - Multiple promotions aggregated using `; `.
-- If no data exists, `promotion_name` may be `API_EMPTY` or `API_MISSING` depending on merchant log.
+- Endpoint `POST /ingest/promotions` chỉ lưu khuyến mãi cho các campaign đã duyệt (APPROVED/SUCCESSFUL). Với một merchant có nhiều campaign đã duyệt, hệ thống sẽ ưu tiên campaign đang chạy (running); nếu không có, chọn ngẫu nhiên một campaign đã duyệt của merchant đó.
+- Phân loại trường thiếu dữ liệu khi lưu Promotions:
+  - Nếu key không có trong payload API: giá trị sẽ là `API_MISSING`.
+  - Nếu key có nhưng rỗng/blank: giá trị sẽ là `NO_DATA`.
+  - Riêng `content` có thể lấy từ `description` nếu `content` trống nhưng `description` có nội dung.
+  - Riêng `link` ưu tiên `link`; nếu không có nhưng có `url` thì dùng `url`.
+  - Các trường áp dụng phân loại: `name`, `content`, `coupon`, `link`.
 
 Yêu cầu khi import (Promotions):
 - Nếu thiếu `campaign_id`, hệ thống sẽ tự sinh mã theo quy tắc bên dưới.
@@ -267,6 +273,53 @@ Phản hồi mẫu:
 ```
 
 ---
+
+## Endpoint: POST /ingest/promotions
+Nhập danh sách khuyến mãi theo merchant, chỉ ghi vào bảng Promotions khi merchant có ít nhất một campaign đã APPROVED/SUCCESSFUL.
+
+- Path: `POST /ingest/promotions`
+- Provider: `accesstrade` (mặc định)
+- Tham số (body JSON):
+  - provider: string, optional (mặc định `accesstrade`)
+  - merchant: string, optional — lọc theo merchant cụ thể; nếu không truyền sẽ chạy tất cả merchant có campaign đã duyệt
+  - create_offers: boolean, optional (mặc định true) — tạo ProductOffer tối thiểu từ promotions (chỉ khi có `link`/`aff_link`)
+  - check_urls: boolean, optional (mặc định false) — kiểm tra link sống trước khi tạo Offer
+
+Quy tắc mapping & phân loại dữ liệu:
+- Chỉ lưu Promotions nếu tìm được `campaign_id` đã APPROVED/SUCCESSFUL VÀ đang chạy (running) cho merchant đó.
+- Phân loại trường chuỗi:
+  - `API_MISSING` nếu thiếu hẳn key từ API.
+  - `NO_DATA` nếu có key nhưng giá trị trống/blank.
+  - `content`: nếu `content` trống nhưng `description` có nội dung, dùng `description`.
+  - `link`: ưu tiên `link`; nếu thiếu nhưng có `url`, dùng `url`.
+- Tạo Offer từ Promotions chỉ khi campaign đã duyệt; `eligible_commission = running && (APPROVED|SUCCESSFUL)`.
+
+Phản hồi mẫu:
+```
+{ "ok": true, "promotions": 5, "offers_from_promotions": 3 }
+```
+
+## Endpoint: POST /ingest/top-products
+Nhập sản phẩm bán chạy (top products).
+
+- Path: `POST /ingest/top-products`
+- Provider: `accesstrade` (mặc định)
+- Tham số (body JSON):
+  - merchant: string, optional — nếu không truyền sẽ chạy cho tất cả merchant có campaign đang chạy & đã duyệt.
+  - date_from/date_to: YYYY-MM-DD, optional (mặc định 7 ngày gần nhất nếu thiếu)
+  - limit_per_page: number, optional (<=100)
+  - max_pages: number, optional
+  - check_urls: boolean, optional (mặc định false)
+  - verbose: boolean, optional
+
+Quy tắc xử lý:
+- Chỉ tạo Offer khi campaign tương ứng của merchant đang chạy & đã duyệt (APPROVED/SUCCESSFUL).
+- `eligible_commission = running && (APPROVED | SUCCESSFUL)`.
+
+Phản hồi mẫu:
+```
+{ "ok": true, "imported": 42, "by_merchant": { "tikivn": 15, "shopee": 27 } }
+```
 
 ## Change Log
 - 2025-09-24: v2.1 — Chuẩn hóa 2 hàng header (kỹ thuật + TV) cho import; Products yêu cầu `price` và KHÔNG bắt buộc `source_id` (tự sinh nếu thiếu). Bổ sung import cho 4 sheet; quy tắc auto-gen mã 14 ký tự `ex+p|ca|cm|pr...`; cập nhật endpoint `POST /ingest/commissions`; export-excel bỏ `desc_mode`.

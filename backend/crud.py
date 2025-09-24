@@ -278,10 +278,27 @@ def upsert_offer_by_source(db, data: "schemas.ProductOfferCreate"):
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
 
-def list_offers(db: Session, merchant: str | None = None, skip: int = 0, limit: int = 50):
+def list_offers(
+    db: Session,
+    merchant: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+    source_type: str | None = None,
+    exclude_source_types: list[str] | None = None,
+):
+    """
+    List product offers with optional filters.
+    - merchant: filter by merchant name
+    - source_type: exact match on ProductOffer.source_type
+    - exclude_source_types: list of source_types to exclude
+    """
     q = db.query(models.ProductOffer)
     if merchant:
         q = q.filter(models.ProductOffer.merchant == merchant)
+    if source_type:
+        q = q.filter(models.ProductOffer.source_type == source_type)
+    if exclude_source_types:
+        q = q.filter(models.ProductOffer.source_type.notin_(exclude_source_types))
     return q.offset(skip).limit(limit).all()
 
 def get_offer_by_id(db: Session, offer_id: int):
@@ -312,6 +329,25 @@ def delete_all_offers(db: Session) -> int:
     res = db.execute(sa_delete(models.ProductOffer))
     db.commit()
     return res.rowcount or 0
+
+def delete_offers_by_filter(
+    db: Session,
+    source_type: str | None = None,
+    exclude_source_types: list[str] | None = None,
+    campaign_id: str | None = None,
+) -> int:
+    """Bulk delete offers by simple filters. Returns number of deleted rows."""
+    q = db.query(models.ProductOffer)
+    if source_type:
+        q = q.filter(models.ProductOffer.source_type == source_type)
+    if exclude_source_types:
+        q = q.filter(models.ProductOffer.source_type.notin_(exclude_source_types))
+    if campaign_id:
+        q = q.filter(models.ProductOffer.campaign_id == campaign_id)
+    # Use SQLAlchemy delete() for efficiency
+    res = q.delete(synchronize_session=False)
+    db.commit()
+    return int(res or 0)
 
 # ===== Campaign CRUD =====
 def get_campaign_by_cid(db: Session, campaign_id: str):
@@ -405,6 +441,34 @@ def upsert_promotion(db: Session, data: "schemas.PromotionCreate"):
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
 
+def list_promotions(db: Session, skip: int = 0, limit: int = 50, campaign_id: str | None = None):
+    q = db.query(models.Promotion)
+    if campaign_id:
+        q = q.filter(models.Promotion.campaign_id == campaign_id)
+    return q.offset(skip).limit(limit).all()
+
+def get_promotion_by_id(db: Session, pid: int):
+    return db.query(models.Promotion).filter(models.Promotion.id == pid).first()
+
+def delete_promotion(db: Session, pid: int):
+    obj = get_promotion_by_id(db, pid)
+    if not obj:
+        return None
+    db.delete(obj)
+    db.commit()
+    return obj
+
+def delete_all_promotions(db: Session) -> int:
+    res = db.execute(sa_delete(models.Promotion))
+    db.commit()
+    return res.rowcount or 0
+
+def delete_promotions_by_campaign(db: Session, campaign_id: str) -> int:
+    q = db.query(models.Promotion).filter(models.Promotion.campaign_id == campaign_id)
+    res = q.delete(synchronize_session=False)
+    db.commit()
+    return int(res or 0)
+
 # ===== CommissionPolicy CRUD =====
 def upsert_commission_policy(db: Session, data: "schemas.CommissionPolicyCreate"):
     obj = db.query(models.CommissionPolicy).filter(
@@ -422,3 +486,31 @@ def upsert_commission_policy(db: Session, data: "schemas.CommissionPolicyCreate"
     obj = models.CommissionPolicy(**payload)
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
+
+def list_commission_policies(db: Session, skip: int = 0, limit: int = 50, campaign_id: str | None = None):
+    q = db.query(models.CommissionPolicy)
+    if campaign_id:
+        q = q.filter(models.CommissionPolicy.campaign_id == campaign_id)
+    return q.offset(skip).limit(limit).all()
+
+def get_commission_policy_by_id(db: Session, cid: int):
+    return db.query(models.CommissionPolicy).filter(models.CommissionPolicy.id == cid).first()
+
+def delete_commission_policy(db: Session, cid: int):
+    obj = get_commission_policy_by_id(db, cid)
+    if not obj:
+        return None
+    db.delete(obj)
+    db.commit()
+    return obj
+
+def delete_all_commission_policies(db: Session) -> int:
+    res = db.execute(sa_delete(models.CommissionPolicy))
+    db.commit()
+    return res.rowcount or 0
+
+def delete_commission_policies_by_campaign(db: Session, campaign_id: str) -> int:
+    q = db.query(models.CommissionPolicy).filter(models.CommissionPolicy.campaign_id == campaign_id)
+    res = q.delete(synchronize_session=False)
+    db.commit()
+    return int(res or 0)
