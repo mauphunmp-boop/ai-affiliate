@@ -3,7 +3,7 @@
 Tài liệu này mô tả cấu trúc file Excel dùng cho import/export và một số endpoint liên quan. Nội dung phản ánh đúng code hiện tại trong backend.
 
 ## Sheets Overview (v2)
-- Products: Chỉ sản phẩm từ API (datafeeds/top_products, promotions, manual, excel), có cột `source_type` để phân biệt; dùng cho import/export.
+- Products: Chỉ sản phẩm từ API (datafeeds/top-products, manual, excel); KHÔNG bao gồm nguồn `promotions`. Có cột `source_type` để phân biệt; dùng cho import/export.
 - Campaigns: Danh sách chiến dịch đã duyệt (APPROVED/SUCCESSFUL), độc lập, không phụ thuộc sản phẩm.
 - Commissions: Danh sách chính sách hoa hồng theo campaign, độc lập.
 - Promotions: Danh sách khuyến mãi, độc lập; có cột `merchant` (join từ campaign khi có).
@@ -71,7 +71,7 @@ Vietnamese header (display only):
 - Thời gian cập nhật từ nguồn
 
 Notes:
-- `source_type` phân biệt nguồn ingest: datafeeds/top_products/promotions/manual/excel.
+- `source_type` phân biệt nguồn ingest: datafeeds/top-products/manual/excel (promotions là catalog riêng, không tạo offer).
 - `product_id`, `affiliate_link_available`, và `update_time_raw` được chuẩn hóa từ dữ liệu API.
 
 Yêu cầu khi import (Products):
@@ -236,7 +236,12 @@ Mẹo: Dùng endpoint `GET /offers/export-template` để tải file mẫu đún
 
 ## Export Notes
 - Endpoint: `GET /offers/export-excel` — xuất 4 sheet độc lập (Products/Campaigns/Commissions/Promotions). Không còn tham số `desc_mode`.
+  - Products chỉ gồm datafeeds/top-products/manual/excel.
 - Endpoint: `GET /offers/export-template` — tải template rỗng 4 sheet với 2 hàng header đúng chuẩn.
+
+## Endpoint: GET /offers
+- category: chỉ nhận `offers` | `top-products`.
+- Promotions/Commissions được quản lý qua `/catalog/promotions` và `/catalog/commissions`, không trả qua `GET /offers` để tránh nhầm lẫn.
 
 ## Endpoint: POST /ingest/commissions
 Nhập danh sách chính sách hoa hồng (commission policies) cho các campaign đã chọn. Hỗ trợ lọc theo campaign cụ thể, theo merchant, hoặc toàn bộ campaign đã APPROVED đang chạy.
@@ -275,15 +280,15 @@ Phản hồi mẫu:
 ---
 
 ## Endpoint: POST /ingest/promotions
-Nhập danh sách khuyến mãi theo merchant, chỉ ghi vào bảng Promotions khi merchant có ít nhất một campaign đã APPROVED/SUCCESSFUL.
+Nhập danh sách khuyến mãi theo merchant, chỉ ghi vào bảng Promotions khi merchant có ít nhất một campaign đã APPROVED/SUCCESSFUL. Không còn tạo ProductOffer từ promotions.
 
 - Path: `POST /ingest/promotions`
 - Provider: `accesstrade` (mặc định)
 - Tham số (body JSON):
   - provider: string, optional (mặc định `accesstrade`)
   - merchant: string, optional — lọc theo merchant cụ thể; nếu không truyền sẽ chạy tất cả merchant có campaign đã duyệt
-  - create_offers: boolean, optional (mặc định true) — tạo ProductOffer tối thiểu từ promotions (chỉ khi có `link`/`aff_link`)
-  - check_urls: boolean, optional (mặc định false) — kiểm tra link sống trước khi tạo Offer
+  - verbose: boolean, optional — ghi log chi tiết quá trình ingest
+  - throttle_ms: number, optional (mặc định 50) — độ trễ (milliseconds) giữa các request đến provider
 
 Quy tắc mapping & phân loại dữ liệu:
 - Chỉ lưu Promotions nếu tìm được `campaign_id` đã APPROVED/SUCCESSFUL VÀ đang chạy (running) cho merchant đó.
@@ -292,11 +297,11 @@ Quy tắc mapping & phân loại dữ liệu:
   - `NO_DATA` nếu có key nhưng giá trị trống/blank.
   - `content`: nếu `content` trống nhưng `description` có nội dung, dùng `description`.
   - `link`: ưu tiên `link`; nếu thiếu nhưng có `url`, dùng `url`.
-- Tạo Offer từ Promotions chỉ khi campaign đã duyệt; `eligible_commission = running && (APPROVED|SUCCESSFUL)`.
+- Lưu ý: KHÔNG tạo Offer từ Promotions.
 
 Phản hồi mẫu:
 ```
-{ "ok": true, "promotions": 5, "offers_from_promotions": 3 }
+{ "ok": true, "promotions": 5 }
 ```
 
 ## Endpoint: POST /ingest/top-products

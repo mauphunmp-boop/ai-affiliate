@@ -21,7 +21,8 @@ def get_link(db: Session, link_id: int) -> Optional[models.AffiliateLink]:
 
 def create_link(db: Session, link: schemas.AffiliateLinkCreate) -> models.AffiliateLink:
     # Pydantic v2 ưu tiên model_dump(); fallback .dict() nếu cần
-    payload = link.model_dump() if hasattr(link, "model_dump") else link.dict()
+    # Dùng mode="json" để đảm bảo HttpUrl -> str trước khi ghi DB
+    payload = link.model_dump(mode="json") if hasattr(link, "model_dump") else link.dict()
     obj = models.AffiliateLink(**payload)
     db.add(obj)
     db.commit()
@@ -33,7 +34,8 @@ def update_link(db: Session, link_id: int, link: schemas.AffiliateLinkUpdate) ->
     obj = get_link(db, link_id)
     if not obj:
         return None
-    payload = link.model_dump() if hasattr(link, "model_dump") else link.dict()
+    # Dùng mode="json" để đảm bảo HttpUrl -> str trước khi cập nhật DB
+    payload = link.model_dump(mode="json") if hasattr(link, "model_dump") else link.dict()
     for k, v in payload.items():
         setattr(obj, k, v)
     db.commit()

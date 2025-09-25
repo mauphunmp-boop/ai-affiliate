@@ -80,7 +80,7 @@ def test_catalog_promotions_list_and_delete_by_campaign(client):
 
     # If there are promotions, delete by campaign
     if len(items) > 0:
-        r_del = client.delete(f"/offers/0?category=promotions&campaign_id={cid}")
+        r_del = client.delete("/offers", params={"category": "promotions", "campaign_id": cid})
         assert r_del.status_code == 200
         body = r_del.json()
         assert body.get("ok") is True
@@ -116,7 +116,7 @@ def test_catalog_commissions_list_and_delete_by_campaign(client):
     assert len(items) >= 2
 
     # Delete by campaign id
-    r_del = client.delete("/offers/0?category=commissions&campaign_id=CAMP3")
+    r_del = client.delete("/offers", params={"category": "commissions", "campaign_id": "CAMP3"})
     assert r_del.status_code == 200
     body = r_del.json()
     assert body.get("ok") is True
@@ -187,8 +187,8 @@ def test_delete_offers_from_promotions_by_campaign(client):
         ).count()
         assert count_before == 1
 
-    # Delete using offers category with campaign_id (only promotions-source offers should be removed)
-    r_del = client.delete("/offers/0", params={"category": "offers", "campaign_id": "CAMPX"})
+    # Delete using offers category with campaign_id (only non-top_products offers affected)
+    r_del = client.delete("/offers", params={"category": "offers", "campaign_id": "CAMPX"})
     assert r_del.status_code == 200
     body = r_del.json()
     assert body.get("ok") is True

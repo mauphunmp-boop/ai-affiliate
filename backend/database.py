@@ -1,6 +1,7 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy import inspect, text
 
 """
 Database configuration
@@ -27,3 +28,66 @@ if DATABASE_URL.startswith("sqlite"):
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def apply_simple_migrations(engine) -> None:
+    """
+    Simple, idempotent migrations to backfill missing columns when the DB was created
+    from an older schema (e.g., existing Postgres DB).
+
+    Currently handled (table: product_offers):
+      - campaign_id (VARCHAR)
+      - approval_status (VARCHAR)
+      - eligible_commission (BOOLEAN DEFAULT FALSE)
+      - source_type (VARCHAR)
+      - affiliate_link_available (BOOLEAN DEFAULT FALSE)
+      - product_id (VARCHAR)
+      - extra (TEXT)
+      - updated_at (TIMESTAMP WITH TIME ZONE)
+
+    Notes:
+    - CREATE TABLE IF NOT EXISTS is covered by Base.metadata.create_all elsewhere.
+    - This function only adds the column if it does not exist.
+    - It is intentionally minimal to avoid heavy migration dependencies.
+    """
+    inspector = inspect(engine)
+    try:
+        cols = {c["name"] for c in inspector.get_columns("product_offers")}
+    except Exception:
+        # Table may not exist yet; nothing to do.
+        return
+
+    statements: list[str] = []
+    if "campaign_id" not in cols:
+        statements.append("ALTER TABLE product_offers ADD COLUMN campaign_id VARCHAR")
+    if "approval_status" not in cols:
+        statements.append("ALTER TABLE product_offers ADD COLUMN approval_status VARCHAR")
+    if "eligible_commission" not in cols:
+        # DEFAULT FALSE is safe; existing rows get FALSE
+        statements.append("ALTER TABLE product_offers ADD COLUMN eligible_commission BOOLEAN DEFAULT FALSE")
+    if "source_type" not in cols:
+        statements.append("ALTER TABLE product_offers ADD COLUMN source_type VARCHAR")
+    if "affiliate_link_available" not in cols:
+        statements.append("ALTER TABLE product_offers ADD COLUMN affiliate_link_available BOOLEAN DEFAULT FALSE")
+    if "product_id" not in cols:
+        statements.append("ALTER TABLE product_offers ADD COLUMN product_id VARCHAR")
+    if "extra" not in cols:
+        # TEXT is widely compatible across SQLite/Postgres
+        statements.append("ALTER TABLE product_offers ADD COLUMN extra TEXT")
+    if "updated_at" not in cols:
+        # Keep it nullable to avoid heavy locks; app code sets it on update
+        if engine.dialect.name == "postgresql":
+            statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMPTZ")
+        else:
+            statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMP")
+
+    if not statements:
+        return
+
+    with engine.begin() as conn:
+        for sql in statements:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                # Ignore if another process already applied it.
+                pass

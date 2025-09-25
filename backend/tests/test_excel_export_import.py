@@ -63,11 +63,6 @@ def _seed_minimal_data(db):
         campaign_id="CAMP_OK", source_type="top_products", extra=None
     ))
     crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-        source="accesstrade", source_id="p3", merchant="tikivn", title="SP PROMO",
-        url="https://tiki.vn/3", affiliate_url=None, image_url=None, price=300000, currency="VND",
-        campaign_id="CAMP_OK", source_type="promotions", extra=None
-    ))
-    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
         source="excel", source_id="p4", merchant="tikivn", title="SP EXCEL",
         url="https://tiki.vn/4", affiliate_url=None, image_url=None, price=400000, currency="VND",
         campaign_id="CAMP_OK", source_type="excel", extra=None
@@ -109,10 +104,10 @@ def test_export_excel_structure_and_sources(client):
     assert "source_type" in cols
     assert "extra_raw" not in cols
 
-    # Ensure products include extended sources
+    # Ensure products include sources (without promotions)
     # Skip the Vietnamese header row (row index 1 in Excel, zero-based in pandas skiprows)
     dfp = xls.parse("Products", skiprows=[1])
-    assert (dfp["source_type"].isin(["datafeeds", "top_products", "promotions", "manual", "excel"]).any())
+    assert (dfp["source_type"].isin(["datafeeds", "top_products", "manual", "excel"]).any())
 
     # Enforce exact column order based on trans_products keys in backend
     expected_products_cols = [
@@ -131,11 +126,11 @@ def test_export_excel_structure_and_sources(client):
     assert list(dfc.columns) == expected_campaigns_cols
 
     dfcm = xls.parse("Commissions", skiprows=[1])
-    expected_comm_cols = ["campaign_id","reward_type","sales_ratio","sales_price","target_month"]
+    expected_comm_cols = ["id","campaign_id","reward_type","sales_ratio","sales_price","target_month"]
     assert list(dfcm.columns) == expected_comm_cols
 
     dfpr = xls.parse("Promotions", skiprows=[1])
-    expected_prom_cols = ["campaign_id","merchant","name","content","start_time","end_time","coupon","link"]
+    expected_prom_cols = ["id","campaign_id","merchant","name","content","start_time","end_time","coupon","link"]
     assert list(dfpr.columns) == expected_prom_cols
 
 

@@ -2,7 +2,7 @@ import logging
 import traceback
 import os, hmac, hashlib, base64, json, time, asyncio
 from urllib.parse import urlparse, quote_plus
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Literal
 
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +17,7 @@ from sqlalchemy import text, or_, and_, func
 
 from ai_service import suggest_products_with_config
 import models, schemas, crud
-from database import Base, engine, SessionLocal
+from database import Base, engine, SessionLocal, apply_simple_migrations
 from pydantic import BaseModel, HttpUrl
 from accesstrade_service import (
     fetch_products, map_at_product_to_offer, _check_url_alive, fetch_promotions,
@@ -70,8 +70,15 @@ logger = logging.getLogger("affiliate_api")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO)
 
-# --- DB init: create tables on import (no Alembic here) ---
+# --- DB init: create tables and apply lightweight migrations (no Alembic here) ---
 Base.metadata.create_all(bind=engine)
+# Ensure older Postgres DBs get new columns added idempotently
+try:
+    apply_simple_migrations(engine)
+except Exception:
+    # Non-fatal: continue startup even if migration helper fails
+    logger = logging.getLogger("affiliate_api")
+    logger.warning("apply_simple_migrations failed during startup", exc_info=True)
 
 # Thiết lập mặc định cho policy link-check nếu chưa có trong DB
 def _ensure_default_policy_flags():
@@ -640,6 +647,10 @@ class IngestReq(BaseModel):
     provider: str = "accesstrade"                 # ví dụ: "accesstrade", "adpia", ...
     path: str = "/v1/publishers/product_search"   # tuỳ provider
     params: Dict[str, str] | None = None
+    # Tuỳ chọn chung (không bắt buộc, có thể bị bỏ qua tuỳ provider)
+    check_urls: bool = False
+    verbose: bool = False
+    throttle_ms: int = 50
 
     model_config = {
         "json_schema_extra": {
@@ -647,7 +658,10 @@ class IngestReq(BaseModel):
                 {
                     "provider": "accesstrade",
                     "path": "/v1/datafeeds",
-                    "params": {"merchant": "tikivn", "page": "1", "limit": "50"}
+                    "params": {"merchant": "tikivn", "page": "1", "limit": "50"},
+                    "check_urls": False,
+                    "verbose": False,
+                    "throttle_ms": 50
                 }
             ]
         }
@@ -663,13 +677,13 @@ class IngestAllDatafeedsReq(BaseModel):
         - update_from/update_to, price_from/to, discount_*: chuyển tiếp xuống API AT nếu hỗ trợ.
     - limit_per_page: kích thước trang khi gọi ra Accesstrade (mặc định 100)
     - max_pages: chặn vòng lặp vô hạn nếu API trả bất thường (mặc định 2000 trang)
-    - throttle_ms: nghỉ giữa các lần gọi để tôn trọng rate-limit (mặc định 200ms)
+    - throttle_ms: nghỉ giữa các lần gọi để tôn trọng rate-limit (mặc định 50ms)
     - check_urls: nếu True mới kiểm tra link sống (mặc định False).
     """
     params: Dict[str, str] | None = None
     limit_per_page: int = 100
     max_pages: int = 2000
-    throttle_ms: int = 200
+    throttle_ms: int = 50
     check_urls: bool = False
     verbose: bool = False
     model_config = {
@@ -679,7 +693,7 @@ class IngestAllDatafeedsReq(BaseModel):
                     "params": {"merchant": "tikivn"},
                     "limit_per_page": 100,
                     "max_pages": 1,
-                    "throttle_ms": 200,
+                    "throttle_ms": 50,
                     "check_urls": False,
                     "verbose": False
                 }
@@ -702,19 +716,19 @@ class CampaignsSyncReq(BaseModel):
     limit_per_page: int = 50
     page_concurrency: int = 6
     window_pages: int = 10
-    throttle_ms: int = 200
+    throttle_ms: int = 50
     merchant: str | None = None
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "statuses": ["running"],
+                    "statuses": ["running", "paused"],
                     "only_my": True,
                     "enrich_user_status": False,
                     "limit_per_page": 50,
                     "page_concurrency": 6,
                     "window_pages": 10,
-                    "throttle_ms": 300
+                    "throttle_ms": 50
                 }
             ]
         }
@@ -724,21 +738,18 @@ class IngestV2PromotionsReq(BaseModel):
     """
     Ingest khuyến mãi (offers_informations) theo merchant đã duyệt.
     - merchant: nếu truyền, chỉ ingest đúng merchant này; nếu bỏ trống sẽ chạy cho tất cả merchant active.
-    - Lưu ý: KHÔNG còn tự tạo ProductOffer từ Promotions. Trường create_offers đã bị ngưng dùng và sẽ bị bỏ qua.
-    - check_urls: (KHÔNG áp dụng cho Promotions nữa) giữ để tương thích nhưng bị bỏ qua.
+    - Lưu ý: KHÔNG tạo ProductOffer từ Promotions.
     """
     merchant: str | None = None
-    # deprecated: giữ để tương thích request cũ, nhưng bị bỏ qua
-    create_offers: bool = False
-    # deprecated for promotions path, ignored
-    check_urls: bool = False
     verbose: bool = False
-    throttle_ms: int = 200
+    throttle_ms: int = 50
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "merchant": "tikivn"
+                    "merchant": "tikivn",
+                    "verbose": False,
+                    "throttle_ms": 50
                 }
             ]
         }
@@ -760,7 +771,7 @@ class IngestV2TopProductsReq(BaseModel):
     verbose: bool = False
     limit_per_page: int = 100
     max_pages: int = 200
-    throttle_ms: int = 200
+    throttle_ms: int = 50
     model_config = {
         "json_schema_extra": {
             "examples": [
@@ -770,26 +781,14 @@ class IngestV2TopProductsReq(BaseModel):
                     "date_to": "2025-09-22",
                     "limit_per_page": 50,
                     "max_pages": 1,
-                    "check_urls": False
+                    "check_urls": False,
+                    "verbose": False,
+                    "throttle_ms": 50
                 }
             ]
         }
     }
-# ================================
-# Unified provider-agnostic ingest (front-door)
-class UnifiedCampaignsSyncReq(CampaignsSyncReq):
-    provider: str = "accesstrade"
-
-class UnifiedPromotionsReq(IngestV2PromotionsReq):
-    provider: str = "accesstrade"
-
-class UnifiedTopProductsReq(IngestV2TopProductsReq):
-    provider: str = "accesstrade"
-
-class UnifiedDatafeedsAllReq(IngestAllDatafeedsReq):
-    provider: str = "accesstrade"
-
-## Removed duplicated earlier unified endpoints (replaced by a single consolidated set below)
+## (old) Removed duplicated unified request classes — sử dụng nhóm *Unified* phía dưới
 
 # ---------------- Provider registry wiring ----------------
 _registry = ProviderRegistry()
@@ -983,9 +982,9 @@ def list_offers_api(
     merchant: str | None = None,
     skip: int = 0,
     limit: int = 50,
-    category: str | None = Query(
+    category: Literal["offers", "top-products"] = Query(
         "offers",
-        description="Nhóm dữ liệu: offers | top-products. Với promotions/commissions, dùng /catalog/*"
+        description="Nhóm dữ liệu: offers | top-products"
     ),
     db: Session = Depends(get_db)
 ):
@@ -994,13 +993,13 @@ def list_offers_api(
     - `merchant`: lọc theo tên merchant (vd: `shopee`, `lazada`, `tiki`)  
     - `skip`: số bản ghi bỏ qua (offset)  
     - `limit`: số bản ghi tối đa trả về  
-    - `category`: 'offers' (mặc định) hoặc 'top-products'. Với 'promotions' hay 'commissions' → dùng /catalog/promotions hoặc /catalog/commissions.
+    - `category`: 'offers' (mặc định) hoặc 'top-products'.
     """
     cat = (category or "offers").strip().lower()
-    if cat not in ("offers", "top-products", "top_products"):
-        raise HTTPException(status_code=400, detail="category không hợp lệ cho /offers. Dùng /catalog/<category> cho promotions/commissions")
+    if cat not in ("offers", "top-products"):
+        raise HTTPException(status_code=400, detail="category không hợp lệ; chỉ hỗ trợ: offers | top-products")
 
-    if cat in ("top-products", "top_products"):
+    if cat == "top-products":
         rows = crud.list_offers(db, merchant=merchant, skip=skip, limit=limit, source_type="top_products")
     else:
         # 'offers' mặc định: loại trừ các nhóm không phải catalog chính
@@ -1666,7 +1665,7 @@ async def ingest_v2_campaigns_sync(
     from accesstrade_service import fetch_campaigns_full_all, fetch_campaign_detail
 
     # --- gom dữ liệu theo nhiều trạng thái (running/paused/...) nếu được truyền ---
-    statuses = (req.statuses or ["running"])  # mặc định chỉ 'running' để nhanh; bạn có thể gửi ["running","paused"]
+    statuses = (req.statuses or ["running", "paused"])  # mặc định: chạy cả running và paused
     unique = {}
     for st in statuses:
         try:
@@ -2118,10 +2117,10 @@ class IngestCommissionsReq(ProviderReq, BaseModel):
     description=(
         "Đồng bộ danh sách campaigns.\n\n"
         "- Bắt buộc: (không có).\n"
-        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), statuses (mặc định [\"running\"]), only_my (mặc định true),\n"
-        "  enrich_user_status (mặc định true), limit_per_page, page_concurrency, window_pages, throttle_ms, merchant.\n\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), statuses (mặc định [\"running\",\"paused\"]), only_my (mặc định true),\n"
+        "  enrich_user_status (mặc định true), limit_per_page, page_concurrency, window_pages, throttle_ms (mặc định 50ms), merchant.\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"provider\": \"accesstrade\",\n  \"statuses\": [\"running\"],\n  \"only_my\": true\n}"
+        "{\n  \"provider\": \"accesstrade\",\n  \"statuses\": [\"running\", \"paused\"],\n  \"only_my\": true,\n  \"throttle_ms\": 50\n}"
     )
 )
 async def ingest_campaigns_sync_unified(
@@ -2129,8 +2128,8 @@ async def ingest_campaigns_sync_unified(
         ...,
         examples={
             "default": {
-                "summary": "Chỉ chạy running",
-                "value": {"provider": "accesstrade", "statuses": ["running"], "only_my": True}
+                "summary": "Chạy running + paused (mặc định)",
+                "value": {"provider": "accesstrade", "statuses": ["running", "paused"], "only_my": True, "throttle_ms": 50}
             }
         }
     ),
@@ -2149,15 +2148,20 @@ async def ingest_campaigns_sync_unified(
     description=(
         "Nhập khuyến mãi theo merchant.\n\n"
         "- Bắt buộc: (không có).\n"
-    "- Tuỳ chọn: provider (mặc định \"accesstrade\"), merchant (lọc theo merchant), throttle_ms (mặc định 200ms). create_offers/check_urls đã bị ngưng dùng và sẽ bị bỏ qua.\n\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), merchant (lọc theo merchant), verbose (mặc định false), throttle_ms (mặc định 50ms).\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\"\n}"
+        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"verbose\": false,\n  \"throttle_ms\": 50\n}"
     )
 )
 async def ingest_promotions_unified(
     req: PromotionsUnifiedReq = Body(
         ...,
-        example={"provider": "accesstrade", "merchant": "tikivn"}
+        examples={
+            "default": {
+                "summary": "Ví dụ merchant",
+                "value": {"provider": "accesstrade", "merchant": "tikivn", "verbose": False, "throttle_ms": 50}
+            }
+        }
     ),
     db: Session = Depends(get_db)
 ):
@@ -2175,9 +2179,9 @@ async def ingest_promotions_unified(
         "Nhập sản phẩm bán chạy theo merchant.\n\n"
         "- Bắt buộc: (không có). Nếu không truyền merchant, hệ thống sẽ chạy cho TẤT CẢ merchant có campaign đang chạy và đã duyệt (APPROVED/SUCCESSFUL).\n"
         "- Tuỳ chọn: provider (mặc định \"accesstrade\"), date_from/date_to (YYYY-MM-DD), limit_per_page (<=100),\n"
-        "  max_pages, throttle_ms, check_urls (mặc định false), verbose.\n\n"
+        "  max_pages, check_urls (mặc định false), verbose (mặc định false), throttle_ms (mặc định 50ms).\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"limit_per_page\": 50,\n  \"max_pages\": 1\n}"
+        "{\n  \"provider\": \"accesstrade\",\n  \"merchant\": \"tikivn\",\n  \"limit_per_page\": 50,\n  \"max_pages\": 1,\n  \"check_urls\": false,\n  \"verbose\": false,\n  \"throttle_ms\": 50\n}"
     )
 )
 async def ingest_top_products_unified(
@@ -2186,7 +2190,7 @@ async def ingest_top_products_unified(
         examples={
             "default": {
                 "summary": "Top products 1 trang",
-                "value": {"provider": "accesstrade", "merchant": "tikivn", "limit_per_page": 50, "max_pages": 1}
+                "value": {"provider": "accesstrade", "merchant": "tikivn", "limit_per_page": 50, "max_pages": 1, "check_urls": False, "verbose": False, "throttle_ms": 50}
             }
         }
     ),
@@ -2205,10 +2209,10 @@ async def ingest_top_products_unified(
     description=(
         "Gọi datafeeds cho tất cả merchant đã duyệt.\n\n"
         "- Bắt buộc: (không có).\n"
-    "- Tuỳ chọn: provider (mặc định \"accesstrade\"), params (truyền xuống API AT), limit_per_page (mặc định 100),\n"
-    "  max_pages (mặc định 2000), throttle_ms (mặc định 200), check_urls (mặc định false), verbose.\n\n"
+        "- Tuỳ chọn: provider (mặc định \"accesstrade\"), params (truyền xuống API AT), limit_per_page (mặc định 100),\n"
+        "  max_pages (mặc định 2000), check_urls (mặc định false), verbose (mặc định false), throttle_ms (mặc định 50ms).\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"provider\": \"accesstrade\",\n  \"params\": {\"merchant\": \"tikivn\"},\n  \"max_pages\": 1\n}"
+        "{\n  \"provider\": \"accesstrade\",\n  \"params\": {\"merchant\": \"tikivn\"},\n  \"max_pages\": 1,\n  \"check_urls\": false,\n  \"verbose\": false,\n  \"throttle_ms\": 50\n}"
     )
 )
 async def ingest_datafeeds_all_unified(
@@ -2217,7 +2221,7 @@ async def ingest_datafeeds_all_unified(
         examples={
             "default": {
                 "summary": "Quét toàn bộ đã duyệt",
-                "value": {"provider": "accesstrade", "params": {"merchant": "tikivn"}, "max_pages": 1}
+                "value": {"provider": "accesstrade", "params": {"merchant": "tikivn"}, "max_pages": 1, "check_urls": False, "verbose": False, "throttle_ms": 50}
             }
         }
     ),
@@ -2228,8 +2232,6 @@ async def ingest_datafeeds_all_unified(
         inner = IngestAllDatafeedsReq(**req.model_dump(exclude={"provider"}))
         return await ingest_accesstrade_datafeeds_all(inner, db)
     raise HTTPException(status_code=400, detail=f"Provider '{prov}' hiện chưa được hỗ trợ")
-
-"""Legacy provider-specific routes have been removed. Use unified endpoints."""
 
 """Legacy provider-specific routes have been removed. Use unified endpoints."""
 
@@ -2345,40 +2347,32 @@ def update_offer_api(
 @app.delete(
     "/offers/{offer_id}",
     tags=["Offers 🛒"],
-    summary="Xoá 1 sản phẩm",
+    summary="Xoá 1 bản ghi theo ID",
     description=(
-        "Xoá một bản ghi theo ID trong nhóm được chọn.\n\n"
-        "- category: offers (mặc định) | top-products | promotions | commissions"
+        "Xoá một bản ghi duy nhất theo ID.\n\n"
+        "- category: offers (mặc định) | top-products | promotions | commissions.\n"
+        "- Lưu ý: bulk delete theo campaign_id hãy dùng DELETE /offers (không kèm {offer_id})."
     )
 )
 def delete_offer_api(
     offer_id: int,
-    category: str | None = Query("offers", description="offers | top-products | promotions | commissions"),
-    campaign_id: str | None = Query(None, description="Xoá theo campaign_id (áp dụng cho promotions/commissions và cả offers nguồn promotions)"),
+    category: Literal["offers", "top-products", "promotions", "commissions"] = Query(
+        "offers", description="offers | top-products | promotions | commissions"
+    ),
     db: Session = Depends(get_db)
 ):
     cat = (category or "offers").strip().lower()
-    if cat in ("offers", "top-products", "top_products"):
-        # Cho phép xoá theo campaign_id đối với các offer tạo từ promotions (source_type='promotions')
-        if campaign_id:
-            deleted = crud.delete_offers_by_filter(db, source_type="promotions", campaign_id=campaign_id)
-            return {"ok": True, "deleted": deleted, "category": "offers", "campaign_id": campaign_id}
+    if cat in ("offers", "top-products"):
         obj = crud.delete_offer(db, offer_id)
         if not obj:
             raise HTTPException(status_code=404, detail="Offer not found")
-        return {"ok": True, "deleted_id": offer_id, "category": "top-products" if cat.startswith("top") else "offers"}
+        return {"ok": True, "deleted_id": offer_id, "category": "top-products" if cat == "top-products" else "offers"}
     elif cat == "promotions":
-        if campaign_id:
-            deleted = crud.delete_promotions_by_campaign(db, campaign_id)
-            return {"ok": True, "deleted": deleted, "category": "promotions", "campaign_id": campaign_id}
         obj = crud.delete_promotion(db, offer_id)
         if not obj:
             raise HTTPException(status_code=404, detail="Promotion not found")
         return {"ok": True, "deleted_id": offer_id, "category": "promotions"}
     elif cat == "commissions":
-        if campaign_id:
-            deleted = crud.delete_commission_policies_by_campaign(db, campaign_id)
-            return {"ok": True, "deleted": deleted, "category": "commissions", "campaign_id": campaign_id}
         obj = crud.delete_commission_policy(db, offer_id)
         if not obj:
             raise HTTPException(status_code=404, detail="Commission policy not found")
@@ -2560,30 +2554,33 @@ async def check_offer_status(offer_id: int, db: Session = Depends(get_db)):
 @app.delete(
     "/offers",
     tags=["Offers 🛒"],
-    summary="Xoá dữ liệu theo nhóm",
+    summary="Xoá dữ liệu theo nhóm (bulk)",
     description=(
-        "Xoá tất cả bản ghi trong nhóm được chọn.\n\n"
-        "- category: offers (mặc định) | top-products | promotions | commissions"
+        "Xoá nhiều bản ghi theo nhóm và (tuỳ chọn) campaign_id.\n\n"
+        "- category: offers (mặc định) | top-products | promotions | commissions.\n"
+        "- Với category=offers: sẽ xoá tất cả ProductOffer TRỪ nhóm top-products (bao gồm cả các offer có source_type='promotions').\n"
+        "- Dùng campaign_id để giới hạn theo chiến dịch."
     )
 )
 def delete_all_offers_api(
-    category: str | None = Query("offers", description="offers | top-products | promotions | commissions"),
+    category: Literal["offers", "top-products", "promotions", "commissions"] = Query(
+        "offers", description="offers | top-products | promotions | commissions"
+    ),
     campaign_id: str | None = Query(None, description="Xoá theo campaign_id (tuỳ chọn)"),
     db: Session = Depends(get_db)
 ):
     cat = (category or "offers").strip().lower()
     deleted = 0
-    if cat in ("offers", "top-products", "top_products"):
-        if cat in ("top-products", "top_products"):
+    if cat in ("offers", "top-products"):
+        if cat in ("top-products",):
             deleted = crud.delete_offers_by_filter(db, source_type="top_products", campaign_id=campaign_id)
             effective_cat = "top-products"
         else:
-            # Xoá tất cả nhưng loại trừ top_products & promotions để tránh xoá nhầm nhóm khác
+            # Xoá tất cả offer nhưng loại trừ nhóm top-products; giữ lại promotions-source để xoá được theo campaign
             if campaign_id:
-                # Chỉ xoá các offer thuộc campaign cụ thể (không bao gồm top_products/promotions)
-                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products", "promotions"], campaign_id=campaign_id)
+                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products"], campaign_id=campaign_id)
             else:
-                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products", "promotions"])
+                deleted = crud.delete_offers_by_filter(db, exclude_source_types=["top_products"])
             effective_cat = "offers"
     elif cat == "promotions":
         deleted = crud.delete_promotions_by_campaign(db, campaign_id) if campaign_id else crud.delete_all_promotions(db)
@@ -2923,6 +2920,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     imported_commissions = 0
     if "Commissions" in xls.sheet_names:
         trans_commissions = {
+            "id": "Mã ID",
             "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
             "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
         }
@@ -2955,6 +2953,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     imported_promotions = 0
     if "Promotions" in xls.sheet_names:
         trans_promotions = {
+            "id": "Mã ID",
             "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
             "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
         }
@@ -3001,7 +3000,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     tags=["Offers 🛒"],
     summary="Xuất Excel chuyên biệt (Products/Campaigns/Commissions/Promotions)",
     description=(
-        "Xuất Excel gồm 4 sheet độc lập. Products chỉ gồm sản phẩm từ API (datafeeds/top_products) và có cột source_type; "
+        "Xuất Excel gồm 4 sheet độc lập. Products chỉ gồm sản phẩm gốc (datafeeds/top-products/manual/excel) và có cột source_type; "
         "Campaigns chỉ các campaign đã APPROVED/SUCCESSFUL; Commissions/Promotions độc lập, không phụ thuộc sản phẩm."
     )
 )
@@ -3017,9 +3016,9 @@ def export_offers_excel(
     import pandas as pd
     from collections import defaultdict
 
-    # 1) Products: chỉ lấy offers từ nguồn API (datafeeds/top_products)
+    # 1) Products: chỉ lấy offers gốc (datafeeds/top-products/manual/excel) — KHÔNG bao gồm promotions-source
     q_offers = db.query(models.ProductOffer).filter(
-        models.ProductOffer.source_type.in_(["datafeeds", "top_products", "promotions", "manual", "excel"])  # mở rộng theo yêu cầu
+        models.ProductOffer.source_type.in_(["datafeeds", "top_products", "manual", "excel"])  # loại bỏ "promotions"
     )
     if merchant:
         q_offers = q_offers.filter(models.ProductOffer.merchant == merchant.lower())
@@ -3222,6 +3221,7 @@ def export_offers_excel(
     df_commissions_rows = []
     for cp in commissions_all:
         df_commissions_rows.append({
+            "id": cp.id,
             "campaign_id": cp.campaign_id,
             "reward_type": cp.reward_type,
             "sales_ratio": cp.sales_ratio,
@@ -3238,6 +3238,7 @@ def export_offers_excel(
         if pr.campaign_id and pr.campaign_id in campaign_map:
             m = campaign_map[pr.campaign_id].merchant
         df_promotions_rows.append({
+            "id": pr.id,
             "campaign_id": pr.campaign_id,
             "merchant": _sanitize_val(m),
             "name": _sanitize_val(pr.name),
@@ -3275,10 +3276,12 @@ def export_offers_excel(
         "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
+        "id": "Mã ID",
         "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
         "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
     }
     trans_promotions = {
+        "id": "Mã ID",
         "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
         "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
     }
@@ -3405,10 +3408,12 @@ def export_excel_template():
         "type": "Loại", "campaign_url": "URL chiến dịch",
     }
     trans_commissions = {
+        "id": "Mã ID",
         "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
         "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
     }
     trans_promotions = {
+        "id": "Mã ID",
         "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
         "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
     }
