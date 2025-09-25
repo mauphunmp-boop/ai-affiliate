@@ -241,21 +241,37 @@ def upsert_offer_by_source(db, data: "schemas.ProductOfferCreate"):
     )
     obj = db.execute(stmt).scalars().first()
     if obj:
-        obj.title = data.title
-        obj.url = str(data.url)
-        obj.affiliate_url = data.affiliate_url
-        obj.image_url = data.image_url
-        obj.price = data.price
-        obj.currency = data.currency or "VND"
-        obj.merchant = data.merchant
-        obj.campaign_id = getattr(data, "campaign_id", None)
+        def _set_if_not_blank(attr: str, val):
+            # Không ghi đè nếu None hoặc chuỗi rỗng (sau strip)
+            if val is None:
+                return
+            if isinstance(val, str) and val.strip() == "":
+                return
+            setattr(obj, attr, val)
+
+        _set_if_not_blank("title", data.title)
+        # url là chuỗi: chuyển str và không ghi đè nếu chuỗi rỗng
+        _set_if_not_blank("url", str(data.url) if getattr(data, "url", None) is not None else None)
+        _set_if_not_blank("affiliate_url", data.affiliate_url)
+        _set_if_not_blank("image_url", data.image_url)
+        # số/bool: 0/False vẫn ghi đè
+        if getattr(data, "price", None) is not None:
+            obj.price = data.price
+        _set_if_not_blank("currency", (data.currency or "VND"))
+        _set_if_not_blank("merchant", data.merchant)
+        # campaign_id có thể là chuỗi; chỉ ghi khi không rỗng
+        _set_if_not_blank("campaign_id", getattr(data, "campaign_id", None))
         # --- V2 flags ---
-        obj.approval_status = getattr(data, "approval_status", obj.approval_status)
-        obj.eligible_commission = getattr(data, "eligible_commission", obj.eligible_commission)
-        obj.source_type = getattr(data, "source_type", obj.source_type)
-        obj.affiliate_link_available = getattr(data, "affiliate_link_available", obj.affiliate_link_available)
-        obj.product_id = getattr(data, "product_id", obj.product_id)
-        obj.extra = data.extra
+        if hasattr(data, "approval_status") and (getattr(data, "approval_status") is not None) and (not (isinstance(getattr(data, "approval_status"), str) and str(getattr(data, "approval_status")).strip() == "")):
+            obj.approval_status = getattr(data, "approval_status")
+        if hasattr(data, "eligible_commission") and getattr(data, "eligible_commission") is not None:
+            obj.eligible_commission = getattr(data, "eligible_commission")
+        _set_if_not_blank("source_type", getattr(data, "source_type", None))
+        if hasattr(data, "affiliate_link_available") and getattr(data, "affiliate_link_available") is not None:
+            obj.affiliate_link_available = getattr(data, "affiliate_link_available")
+        _set_if_not_blank("product_id", getattr(data, "product_id", None))
+        if getattr(data, "extra", None) is not None:
+            obj.extra = data.extra
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
     obj = ProductOffer(
@@ -273,6 +289,72 @@ def upsert_offer_by_source(db, data: "schemas.ProductOfferCreate"):
         approval_status=getattr(data, "approval_status", None),
         eligible_commission=getattr(data, "eligible_commission", False),
         source_type=getattr(data, "source_type", None),
+        affiliate_link_available=getattr(data, "affiliate_link_available", False),
+        product_id=getattr(data, "product_id", None),
+        extra=data.extra,
+    )
+    db.add(obj); db.commit(); db.refresh(obj)
+    return obj
+
+# Hỗ trợ import Excel: ưu tiên cập nhật theo source_id (bất kể source hiện hữu)
+def _apply_offer_update_fields(obj: ProductOffer, data: "schemas.ProductOfferCreate"):
+    def _set_if_not_blank(attr: str, val):
+        if val is None:
+            return
+        if isinstance(val, str) and val.strip() == "":
+            return
+        setattr(obj, attr, val)
+
+    _set_if_not_blank("title", data.title)
+    if getattr(data, "url", None) is not None:
+        _set_if_not_blank("url", str(data.url))
+    _set_if_not_blank("affiliate_url", data.affiliate_url)
+    _set_if_not_blank("image_url", data.image_url)
+    if getattr(data, "price", None) is not None:
+        obj.price = data.price
+    _set_if_not_blank("currency", (data.currency or "VND"))
+    _set_if_not_blank("merchant", data.merchant)
+    _set_if_not_blank("campaign_id", getattr(data, "campaign_id", None))
+    if hasattr(data, "approval_status") and (getattr(data, "approval_status") is not None) and (not (isinstance(getattr(data, "approval_status"), str) and str(getattr(data, "approval_status")).strip() == "")):
+        obj.approval_status = getattr(data, "approval_status")
+    if hasattr(data, "eligible_commission") and getattr(data, "eligible_commission") is not None:
+        obj.eligible_commission = getattr(data, "eligible_commission")
+    _set_if_not_blank("source_type", getattr(data, "source_type", None))
+    if hasattr(data, "affiliate_link_available") and getattr(data, "affiliate_link_available") is not None:
+        obj.affiliate_link_available = getattr(data, "affiliate_link_available")
+    _set_if_not_blank("product_id", getattr(data, "product_id", None))
+    if getattr(data, "extra", None) is not None:
+        obj.extra = data.extra
+
+def upsert_offer_for_excel(db: Session, data: "schemas.ProductOfferCreate") -> ProductOffer:
+    """Upsert cho Excel: nếu tìm thấy bất kỳ ProductOffer nào có source_id trùng thì cập nhật record đó,
+    không phụ thuộc vào trường source. Nếu không có, tạo mới với source='excel'."""
+    # 1) Thử tìm theo (source='excel', source_id)
+    stmt = select(ProductOffer).where(ProductOffer.source == "excel", ProductOffer.source_id == data.source_id)
+    obj = db.execute(stmt).scalars().first()
+    if not obj:
+        # 2) Fallback: tìm theo source_id bất kể source
+        stmt2 = select(ProductOffer).where(ProductOffer.source_id == data.source_id)
+        obj = db.execute(stmt2).scalars().first()
+    if obj:
+        _apply_offer_update_fields(obj, data)
+        db.add(obj); db.commit(); db.refresh(obj)
+        return obj
+    # 3) Không có record nào → tạo mới chuẩn hoá như upsert_offer_by_source
+    obj = ProductOffer(
+        source=(getattr(data, "source", None) or "excel"),
+        source_id=data.source_id,
+        merchant=data.merchant,
+        title=data.title,
+        url=str(data.url),
+        affiliate_url=data.affiliate_url,
+        image_url=data.image_url,
+        price=data.price,
+        currency=data.currency or "VND",
+        campaign_id=getattr(data, "campaign_id", None),
+        approval_status=getattr(data, "approval_status", None),
+        eligible_commission=getattr(data, "eligible_commission", False),
+        source_type=getattr(data, "source_type", "excel"),
         affiliate_link_available=getattr(data, "affiliate_link_available", False),
         product_id=getattr(data, "product_id", None),
         extra=data.extra,
@@ -453,6 +535,11 @@ def upsert_promotion(db: Session, data: "schemas.PromotionCreate"):
     if obj:
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
         for k, v in payload.items():
+            # Không ghi đè bằng None/chuỗi rỗng
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
             setattr(obj, k, v)
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
@@ -499,11 +586,45 @@ def upsert_commission_policy(db: Session, data: "schemas.CommissionPolicyCreate"
     if obj:
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
         for k, v in payload.items():
+            # Không ghi đè bằng None/chuỗi rỗng; số 0 vẫn cập nhật
+            if v is None:
+                continue
+            if isinstance(v, str) and v.strip() == "":
+                continue
             setattr(obj, k, v)
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
     payload = data.model_dump() if hasattr(data, "model_dump") else data.dict()
     obj = models.CommissionPolicy(**payload)
+    db.add(obj); db.commit(); db.refresh(obj)
+    return obj
+
+# ====== Update by ID helpers for Commissions & Promotions ======
+def update_commission_policy_by_id(db: Session, cid: int, data: "schemas.CommissionPolicyCreate"):
+    obj = get_commission_policy_by_id(db, cid)
+    if not obj:
+        return None
+    payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+    for k, v in payload.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        setattr(obj, k, v)
+    db.add(obj); db.commit(); db.refresh(obj)
+    return obj
+
+def update_promotion_by_id(db: Session, pid: int, data: "schemas.PromotionCreate"):
+    obj = get_promotion_by_id(db, pid)
+    if not obj:
+        return None
+    payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+    for k, v in payload.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        setattr(obj, k, v)
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
 

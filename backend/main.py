@@ -1261,7 +1261,10 @@ async def _ingest_products_accesstrade_impl(req: IngestReq, db: Session):
             _vlog("dead_url", {"url": data.get("url")})
             continue
 
-        crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(**data))
+        try:
+            crud.upsert_offer_for_excel(db, schemas.ProductOfferCreate(**data))
+        except Exception:
+            crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(**data))
         imported += 1
 
     return {"ok": True, "imported": imported}
@@ -1641,7 +1644,10 @@ async def ingest_accesstrade_datafeeds_all(
                             _vlog("dead_url", {"url": data.get("url"), "merchant": merchant_norm, "page": page})
                         continue
 
-                crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(**data))
+                try:
+                    crud.upsert_offer_for_excel(db, schemas.ProductOfferCreate(**data))
+                except Exception:
+                    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(**data))
                 imported += 1
 
             # Sau khi xử lý xong 1 trang cho merchant hiện tại
@@ -2035,7 +2041,10 @@ async def ingest_v2_top_products(
                         extra=json.dumps(extra, ensure_ascii=False),
                     )
 
-                    crud.upsert_offer_by_source(db, payload)
+                    try:
+                        crud.upsert_offer_for_excel(db, payload)
+                    except Exception:
+                        crud.upsert_offer_by_source(db, payload)
                     imported += 1
                 except Exception as e:
                     logger.debug("Skip top_product upsert: %s", e)
@@ -2813,12 +2822,32 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         }
         commission = {k: v for k, v in commission.items() if pd.notna(v)}
 
+        # Các cột mở rộng trong ảnh: domain, sku, discount, discount_amount, discount_rate, status_discount, updated_at, desc, cate, shop_name, update_time_raw
+        extra_fields = {
+            "domain": row.get("domain"),
+            "sku": row.get("sku"),
+            "discount": row.get("discount"),
+            "discount_amount": row.get("discount_amount"),
+            "discount_rate": row.get("discount_rate"),
+            "status_discount": row.get("status_discount"),
+            "updated_at": row.get("updated_at"),
+            "desc": row.get("desc"),
+            "cate": row.get("cate"),
+            "shop_name": row.get("shop_name"),
+            "update_time_raw": row.get("update_time_raw"),
+        }
+        # Lọc bỏ các giá trị NaN
+        extra_fields = {k: v for k, v in extra_fields.items() if pd.notna(v)}
+
         # Gộp vào extra (không còn xuất extra_raw trong Excel, nhưng DB vẫn giữ extra nếu có)
         extra = {}
         if promotion:
             extra["promotion"] = promotion
         if commission:
             extra["commission"] = commission
+        # Thêm các trường mở rộng
+        for k, v in extra_fields.items():
+            extra[k] = v
         base["extra"] = json.dumps(extra, ensure_ascii=False)
         
         if only_with_commission:
@@ -2843,7 +2872,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
             if not (eligible_flag or has_comm):
                 continue
 
-        # Auto-convert url -> affiliate_url if missing and a template is available
+        # affiliate_url: nếu file có thì ưu tiên giữ đúng theo file; nếu không có và có url + template → auto convert
         if (not base.get("affiliate_url")) and base.get("url") and base.get("merchant"):
             try:
                 tpl = crud.get_affiliate_template(db, base["merchant"], "accesstrade")
@@ -2875,7 +2904,12 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
             except Exception:
                 continue
 
-        crud.upsert_offer_by_source(db, data)
+        # Dùng upsert đặc thù cho Excel: ưu tiên cập nhật theo source_id (bất kể source hiện có)
+        try:
+            crud.upsert_offer_for_excel(db, data)
+        except Exception:
+            # fallback an toàn nếu hàm mới không khả dụng
+            crud.upsert_offer_by_source(db, data)
         imported += 1
 
     # =========================
@@ -2934,7 +2968,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         df_comm_raw = xls.parse("Commissions")
         df_comm = _validate_and_strip_header(df_comm_raw, trans_commissions, "Commissions")
 
-        # Nếu thiếu campaign_id thì sinh theo định dạng "exca..." (ca/ cm/ pr) → ở đây dùng "cm"
+        # Nếu có cột id: ưu tiên cập nhật theo ID để tránh phát sinh trùng; nếu không có thì upsert theo (campaign_id,reward_type,target_month)
         for _, row in df_comm.iterrows():
             cid = row.get("campaign_id")
             cid = str(cid).strip() if pd.notna(cid) else None
@@ -2949,7 +2983,22 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
                     sales_price=(float(row.get("sales_price")) if pd.notna(row.get("sales_price")) else None),
                     target_month=(str(row.get("target_month")).strip() if pd.notna(row.get("target_month")) else None),
                 )
-                crud.upsert_commission_policy(db, payload)
+                _id_val = row.get("id")
+                if pd.notna(_id_val):
+                    try:
+                        _id_int = int(_id_val)
+                    except Exception:
+                        _id_int = None
+                else:
+                    _id_int = None
+                if _id_int:
+                    # cập nhật theo ID, bỏ qua giá trị rỗng trong payload (đã xử lý ở CRUD)
+                    updated = crud.update_commission_policy_by_id(db, _id_int, payload)
+                    if updated is None:
+                        # nếu ID không tồn tại → fallback upsert theo khóa nghiệp vụ
+                        crud.upsert_commission_policy(db, payload)
+                else:
+                    crud.upsert_commission_policy(db, payload)
                 imported_commissions += 1
             except Exception:
                 continue
@@ -2982,7 +3031,20 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
                     coupon=(str(row.get("coupon")).strip() if pd.notna(row.get("coupon")) else None),
                     link=(str(row.get("link")).strip() if pd.notna(row.get("link")) else None),
                 )
-                crud.upsert_promotion(db, payload)
+                _id_val = row.get("id")
+                if pd.notna(_id_val):
+                    try:
+                        _id_int = int(_id_val)
+                    except Exception:
+                        _id_int = None
+                else:
+                    _id_int = None
+                if _id_int:
+                    updated = crud.update_promotion_by_id(db, _id_int, payload)
+                    if updated is None:
+                        crud.upsert_promotion(db, payload)
+                else:
+                    crud.upsert_promotion(db, payload)
                 imported_promotions += 1
             except Exception:
                 continue
@@ -3176,7 +3238,7 @@ def export_offers_excel(
             "currency": _sanitize_val(o.currency),
             "campaign_id": o.campaign_id,
             "product_id": _sanitize_val(extra.get("product_id") or getattr(o, "product_id", None)),
-            "affiliate_link_available": extra.get("affiliate_link_available"),
+            "affiliate_link_available": o.affiliate_link_available,
             "domain": _sanitize_val(extra.get("domain")),
             "sku": _sanitize_val(extra.get("sku")),
             "discount": extra.get("discount"),
