@@ -1783,8 +1783,10 @@ async def ingest_v2_promotions(
         if key in rec:
             v = rec.get(key)
             s = (str(v).strip() if v is not None else "")
-            return s if s else "NO_DATA"
-        return "API_MISSING"
+            # Tránh lưu placeholder vào DB: trả về None nếu trống
+            return s if s else None
+        # key không tồn tại → không có dữ liệu mới
+        return None
 
     # 0) Tập merchant cần chạy = theo yêu cầu hoặc theo DB các campaign đã APPROVED/SUCCESSFUL
     #    KHÔNG bắt buộc campaign đang running đối với việc lưu promotions
@@ -1856,6 +1858,7 @@ async def ingest_v2_promotions(
                 start_time = p.get("start_time")
                 end_time = p.get("end_time")
 
+                # Không truyền placeholder; None được phép trong schema/model
                 crud.upsert_promotion(db, schemas.PromotionCreate(
                     campaign_id=cid_pick,
                     name=name_val,
@@ -3122,13 +3125,13 @@ def export_offers_excel(
     def _campaign_field_from_log(cid: str, field_name: str):
         rec = CAMP_LAST.get(str(cid) if cid is not None else "")
         if not rec:
-            return "API_MISSING"
+            return None
         if field_name == "end_time" and rec.get("has_end_time") is False:
-            return "NO_DATA"
+            return None
         if field_name == "user_registration_status" and rec.get("has_user_status") is False:
-            return "NO_DATA"
+            return None
         if rec.get("empty") is True:
-            return "NO_DATA"
+            return None
         raw = rec.get("raw")
         if isinstance(raw, dict):
             data = None
@@ -3143,10 +3146,10 @@ def export_offers_excel(
                         v = data.get(k, None)
                         if v not in (None, "", []):
                             return v
-                    return "NO_DATA"
+                    return None
                 v = data.get(field_name, None)
-                return v if v not in (None, "", []) else "NO_DATA"
-        return "API_MISSING"
+                return v if v not in (None, "", []) else None
+        return None
 
     # ---------------------------
     # Build Products rows

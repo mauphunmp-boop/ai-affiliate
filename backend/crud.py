@@ -356,10 +356,24 @@ def get_campaign_by_cid(db: Session, campaign_id: str):
     return db.query(models.Campaign).filter(models.Campaign.campaign_id == campaign_id).first()
 
 def upsert_campaign(db: Session, data: "schemas.CampaignCreate"):
+    """Upsert campaign but NEVER persist placeholder strings.
+
+    Rules:
+    - Treat None/""/"API_MISSING"/"NO_DATA" as "no new information" and do not overwrite existing values.
+    - Normalize user_registration_status (SUCCESSFUL -> APPROVED; uppercase; skip if empty).
+    """
+    PLACEHOLDERS = {None, "", "API_MISSING", "NO_DATA"}
+
     obj = get_campaign_by_cid(db, data.campaign_id)
     if obj:
         # cập nhật các trường có giá trị
         payload = data.model_dump(exclude_unset=True) if hasattr(data, "model_dump") else data.dict(exclude_unset=True)
+
+        # Drop placeholders to preserve existing DB values
+        for k, v in list(payload.items()):
+            if v in PLACEHOLDERS:
+                payload.pop(k, None)
+
         # Chuẩn hoá trạng thái user_registration_status theo chuẩn mới (SUCCESSFUL -> APPROVED; uppercase, trim)
         if "user_registration_status" in payload:
             us_val = payload.get("user_registration_status")
@@ -376,6 +390,10 @@ def upsert_campaign(db: Session, data: "schemas.CampaignCreate"):
         db.add(obj); db.commit(); db.refresh(obj)
         return obj
     payload = data.model_dump() if hasattr(data, "model_dump") else data.dict()
+    # Remove placeholders on insert as well
+    for k, v in list(payload.items()):
+        if v in (None, "", "API_MISSING", "NO_DATA"):
+            payload[k] = None
     # Chuẩn hoá khi tạo mới
     if "user_registration_status" in payload and payload["user_registration_status"] is not None:
         us = str(payload["user_registration_status"]).strip().upper()

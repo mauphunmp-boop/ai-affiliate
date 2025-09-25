@@ -81,13 +81,30 @@ def apply_simple_migrations(engine) -> None:
         else:
             statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMP")
 
-    if not statements:
-        return
-
     with engine.begin() as conn:
+        # Apply column additions first (if any)
         for sql in statements:
             try:
                 conn.execute(text(sql))
             except Exception:
                 # Ignore if another process already applied it.
                 pass
+
+        # Cleanup migration: null-out placeholder strings previously persisted
+        try:
+            # Works for both Postgres and SQLite (CASE/NULLIF expressions)
+            conn.execute(text(
+                """
+                UPDATE campaigns SET
+                  start_time = CASE WHEN start_time IN ('API_MISSING','NO_DATA','') THEN NULL ELSE start_time END,
+                  end_time = CASE WHEN end_time IN ('API_MISSING','NO_DATA','') THEN NULL ELSE end_time END,
+                  merchant = CASE WHEN merchant IN ('API_MISSING','NO_DATA','') THEN NULL ELSE merchant END,
+                  name = CASE WHEN name IN ('API_MISSING','NO_DATA','') THEN NULL ELSE name END,
+                  status = CASE WHEN status IN ('API_MISSING','NO_DATA','') THEN NULL ELSE status END,
+                  approval = CASE WHEN approval IN ('API_MISSING','NO_DATA','') THEN NULL ELSE approval END,
+                  user_registration_status = CASE WHEN user_registration_status IN ('API_MISSING','NO_DATA','') THEN NULL ELSE user_registration_status END
+                """
+            ))
+        except Exception:
+            # Non-fatal: cleanup may run on non-existent table or fail safely
+            pass
