@@ -54,8 +54,8 @@ def apply_simple_migrations(engine) -> None:
     try:
         cols = {c["name"] for c in inspector.get_columns("product_offers")}
     except Exception:
-        # Table may not exist yet; nothing to do.
-        return
+        # Table may not exist yet; skip product_offers patching but continue other tables.
+        cols = set()
 
     statements: list[str] = []
     if "campaign_id" not in cols:
@@ -81,9 +81,23 @@ def apply_simple_migrations(engine) -> None:
         else:
             statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMP")
 
+    # Migrate affiliate_templates: add platform column if missing
+    try:
+        cols_tpl = {c["name"] for c in inspector.get_columns("affiliate_templates")}
+    except Exception:
+        cols_tpl = set()
+
+    statements_tpl: list[str] = []
+    if "platform" not in cols_tpl:
+        # Add nullable platform column; keep it generic VARCHAR/TEXT
+        if engine.dialect.name == "postgresql":
+            statements_tpl.append("ALTER TABLE affiliate_templates ADD COLUMN platform VARCHAR")
+        else:
+            statements_tpl.append("ALTER TABLE affiliate_templates ADD COLUMN platform TEXT")
+
     with engine.begin() as conn:
         # Apply column additions first (if any)
-        for sql in statements:
+        for sql in statements + statements_tpl:
             try:
                 conn.execute(text(sql))
             except Exception:

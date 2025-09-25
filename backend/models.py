@@ -27,14 +27,16 @@ from sqlalchemy import JSON, UniqueConstraint
 class AffiliateTemplate(Base):
     __tablename__ = "affiliate_templates"
     id = Column(Integer, primary_key=True, index=True)
-    merchant = Column(String, nullable=False)      # ví dụ: "shopee", "lazada", "tiki"
+    merchant = Column(String, nullable=True)       # LEGACY: không còn sử dụng, giữ để không phải migrate dữ liệu cũ
     network = Column(String, nullable=False)       # ví dụ: "accesstrade", "adpia"...
+    platform = Column(String, nullable=True)       # ví dụ: "shopee", "lazada", "tiki"
     template = Column(String, nullable=False)      # ví dụ: "https://go.example/deep_link?url={target}&sub1={sub1}"
     default_params = Column(JSON, nullable=True)   # ví dụ: {"sub1": "my_subid_default"}
     enabled = Column(Boolean, default=True)
 
     __table_args__ = (
-        UniqueConstraint("merchant", "network", name="uq_merchant_network"),
+        # Ràng buộc duy nhất theo (network, platform). Lưu ý: NULL trong platform có thể không unique tuỳ DB.
+        UniqueConstraint("network", "platform", name="uq_network_platform"),
     )
 # --- THÊM MỚI: bảng product_offers ---
 class ProductOffer(Base):

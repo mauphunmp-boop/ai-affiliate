@@ -1,11 +1,11 @@
-from pydantic import BaseModel, HttpUrl, constr, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator, Field
 from pydantic import ConfigDict
 from datetime import datetime
 from typing import Optional, Dict
 
 # ----- Base Schema -----
 class AffiliateLinkBase(BaseModel):
-    name: constr(min_length=2, max_length=255)  # Tên từ 2–255 ký tự
+    name: str = Field(min_length=2, max_length=255)  # Tên từ 2–255 ký tự
     url: HttpUrl                                # URL chính (validate chuẩn)
     affiliate_url: HttpUrl                      # URL tiếp thị
 
@@ -46,8 +46,9 @@ class APIConfigOut(APIConfigBase):
     model_config = ConfigDict(from_attributes=True)
 
 class AffiliateTemplateBase(BaseModel):
-    merchant: str
+    # Platform-first: chỉ cần network + platform (platform có thể None cho default theo network)
     network: str
+    platform: Optional[str] = None  # ví dụ: shopee/lazada/tiki
     template: str
     default_params: Optional[Dict[str, str]] = None
     enabled: bool = True

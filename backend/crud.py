@@ -174,35 +174,61 @@ def upsert_api_config_by_name(db: Session, config: schemas.APIConfigCreate) -> m
 from sqlalchemy import select
 from models import AffiliateTemplate
 
-def get_affiliate_template(db, merchant: str, network: str):
-    stmt = select(AffiliateTemplate).where(
-        AffiliateTemplate.merchant == merchant,
+def get_affiliate_template_by_network(db, network: str, platform: str | None = None):
+    # 1) Ưu tiên network + platform
+    if platform:
+        stmt = select(AffiliateTemplate).where(
+            AffiliateTemplate.network == network,
+            AffiliateTemplate.platform == platform,
+            AffiliateTemplate.enabled == True,
+        )
+        tpl = db.execute(stmt).scalars().first()
+        if tpl:
+            return tpl
+    # 2) Fallback network-only (template mặc định cho network)
+    stmt2 = select(AffiliateTemplate).where(
         AffiliateTemplate.network == network,
-        AffiliateTemplate.enabled == True
+        AffiliateTemplate.platform.is_(None),
+        AffiliateTemplate.enabled == True,
     )
-    return db.execute(stmt).scalars().first()
+    tpl2 = db.execute(stmt2).scalars().first()
+    if tpl2:
+        return tpl2
+    return None
 
-def upsert_affiliate_template(db, data):
-    # data: AffiliateTemplateCreate (pydantic)
-    tpl = get_affiliate_template(db, data.merchant, data.network)
+def upsert_affiliate_template(db, data: "schemas.AffiliateTemplateCreate"):
+    # Ưu tiên key: (network, platform) nếu platform có; nếu không có platform thì (network-only)
+    if getattr(data, "platform", None):
+        stmt = select(AffiliateTemplate).where(
+            AffiliateTemplate.network == data.network,
+            AffiliateTemplate.platform == data.platform,
+        )
+        tpl = db.execute(stmt).scalars().first()
+    else:
+        stmt = select(AffiliateTemplate).where(
+            AffiliateTemplate.network == data.network,
+            AffiliateTemplate.platform.is_(None),
+        )
+        tpl = db.execute(stmt).scalars().first()
+
     if tpl:
+        # merchant legacy không còn dùng; giữ nguyên giá trị cũ nếu có nhưng không cập nhật nữa
         tpl.template = data.template
         tpl.default_params = data.default_params
         tpl.enabled = data.enabled
-        db.add(tpl)
-        db.commit()
-        db.refresh(tpl)
+        tpl.platform = getattr(data, "platform", None)
+        db.add(tpl); db.commit(); db.refresh(tpl)
         return tpl
+
     new_tpl = AffiliateTemplate(
-        merchant=data.merchant,
+        merchant=None,
         network=data.network,
+        platform=getattr(data, "platform", None),
         template=data.template,
         default_params=data.default_params,
-        enabled=data.enabled
+        enabled=data.enabled,
     )
-    db.add(new_tpl)
-    db.commit()
-    db.refresh(new_tpl)
+    db.add(new_tpl); db.commit(); db.refresh(new_tpl)
     return new_tpl
 
 def get_affiliate_template_by_id(db: Session, tpl_id: int):

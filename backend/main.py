@@ -466,7 +466,7 @@ async def ai_test(
     summary="Danh sách mẫu deeplink",
     description=(
         "Hiển thị đầy đủ các mẫu deeplink hiện có trong DB.\n\n"
-        "Gợi ý: cấu hình một mẫu cho mỗi cặp (merchant, network)."
+        "Khuyến nghị: cấu hình một mẫu cho mỗi cặp (network, platform)."
     ),
     response_model=list[schemas.AffiliateTemplateOut]
 )
@@ -478,11 +478,11 @@ def list_templates(db: Session = Depends(get_db)):
     tags=["Affiliate 🎯"],
     summary="Upsert mẫu deeplink",
     description=(
-        "Thêm/cập nhật mẫu deeplink cho từng merchant/network.\n\n"
-        "- Bắt buộc: merchant, network, template.\n"
-        "- Tuỳ chọn: default_params (object), enabled (bool, mặc định true).\n\n"
+        "Thêm/cập nhật mẫu deeplink theo (network, platform).\n\n"
+        "- Bắt buộc: network, template.\n"
+        "- Tuỳ chọn: platform (khi None: mẫu mặc định cho network), default_params, enabled.\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"merchant\": \"shopee\",\n  \"network\": \"accesstrade\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"my_subid\"}\n}"
+        "{\n  \"network\": \"accesstrade\",\n  \"platform\": \"shopee\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"my_subid\"}\n}"
     ),
     response_model=schemas.AffiliateTemplateOut
 )
@@ -493,8 +493,8 @@ def upsert_template(
             "default": {
                 "summary": "Mẫu Shopee",
                 "value": {
-                    "merchant": "shopee",
                     "network": "accesstrade",
+                    "platform": "shopee",
                     "template": "https://go.example/?url={target}&sub1={sub1}",
                     "default_params": {"sub1": "my_subid"}
                 }
@@ -512,10 +512,10 @@ def upsert_template(
     summary="Cập nhật mẫu deeplink",
     description=(
         "Sửa mẫu deeplink theo ID.\n\n"
-        "- Bắt buộc: merchant, network, template.\n"
-        "- Tuỳ chọn: default_params, enabled.\n\n"
+        "- Bắt buộc: network, template.\n"
+        "- Tuỳ chọn: platform, default_params, enabled.\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"merchant\": \"lazada\",\n  \"network\": \"accesstrade\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"ads2025\"},\n  \"enabled\": true\n}"
+        "{\n  \"network\": \"accesstrade\",\n  \"platform\": \"lazada\",\n  \"template\": \"https://go.example/?url={target}&sub1={sub1}\",\n  \"default_params\": {\"sub1\": \"ads2025\"},\n  \"enabled\": true\n}"
     ),
     response_model=schemas.AffiliateTemplateOut
 )
@@ -527,8 +527,8 @@ def update_template(
             "default": {
                 "summary": "Sửa mẫu Lazada",
                 "value": {
-                    "merchant": "lazada",
                     "network": "accesstrade",
+                    "platform": "lazada",
                     "template": "https://go.example/?url={target}&sub1={sub1}",
                     "default_params": {"sub1": "ads2025"},
                     "enabled": True
@@ -557,18 +557,18 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
 
 # Yêu cầu convert
 class ConvertReq(BaseModel):
-    merchant: str
     url: HttpUrl
     network: str = "accesstrade"
+    platform: str | None = None
     params: Optional[Dict[str, str]] = None  # ví dụ {"sub1": "my_subid"}
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
-                    "merchant": "shopee",
                     "url": "https://shopee.vn/product/12345",
                     "network": "accesstrade",
+                    "platform": "shopee",
                     "params": {"sub1": "campaign_fb", "utm_source": "fbad"}
                 }
             ]
@@ -585,12 +585,12 @@ class ConvertRes(BaseModel):
     tags=["Affiliate 🎯"],
     summary="Chuyển link gốc → deeplink + shortlink",
     description=(
-        "Nhận link gốc + merchant → trả về affiliate_url (deeplink) và short_url dạng /r/{token}.\n\n"
-        "- Bắt buộc: merchant, url.\n"
-        "- Tuỳ chọn: params (object), network (mặc định \"accesstrade\").\n\n"
-        "Lưu ý: URL phải thuộc domain hợp lệ của merchant (ví dụ shopee.vn).\n\n"
+        "Nhận link gốc → trả về affiliate_url (deeplink) và short_url dạng /r/{token}.\n\n"
+        "- Bắt buộc: url.\n"
+        "- Tuỳ chọn: network (mặc định 'accesstrade'), platform (ví dụ: shopee/lazada/tiki), params (object).\n\n"
+        "Lưu ý: nếu chỉ định platform, URL phải thuộc domain hợp lệ.\n\n"
         "Ví dụ body JSON:\n"
-        "{\n  \"merchant\": \"shopee\",\n  \"url\": \"https://shopee.vn/product/123\",\n  \"params\": {\"sub1\": \"abc\"}\n}"
+        "{\n  \"url\": \"https://shopee.vn/product/123\",\n  \"network\": \"accesstrade\",\n  \"platform\": \"shopee\",\n  \"params\": {\"sub1\": \"abc\"}\n}"
     ),
     response_model=ConvertRes
 )
@@ -601,8 +601,8 @@ def aff_convert(
             "default": {
                 "summary": "Convert Shopee",
                 "value": {
-                    "merchant": "shopee",
                     "url": "https://shopee.vn/product/123",
+                    "platform": "shopee",
                     "params": {"sub1": "abc"}
                 }
             }
@@ -610,12 +610,13 @@ def aff_convert(
     ),
     db: Session = Depends(get_db)
 ):
-    if not _is_allowed_domain(req.merchant, str(req.url)):
-        raise HTTPException(status_code=400, detail=f"URL không thuộc domain hợp lệ của {req.merchant}")
+    platform = req.platform
+    if platform and (not _is_allowed_domain(platform, str(req.url))):
+        raise HTTPException(status_code=400, detail=f"URL không thuộc domain hợp lệ của {platform}")
 
-    tpl = crud.get_affiliate_template(db, req.merchant, req.network)
+    tpl = crud.get_affiliate_template_by_network(db, req.network, platform=platform)
     if not tpl:
-        raise HTTPException(status_code=404, detail=f"Chưa cấu hình template cho merchant={req.merchant}, network={req.network}")
+        raise HTTPException(status_code=404, detail=f"Chưa cấu hình template cho network={req.network} (platform={platform or 'default'})")
 
     merged: Dict[str, str] = {}
     if tpl.default_params:
@@ -2875,7 +2876,7 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
         # affiliate_url: nếu file có thì ưu tiên giữ đúng theo file; nếu không có và có url + template → auto convert
         if (not base.get("affiliate_url")) and base.get("url") and base.get("merchant"):
             try:
-                tpl = crud.get_affiliate_template(db, base["merchant"], "accesstrade")
+                tpl = crud.get_affiliate_template_by_network(db, "accesstrade", platform=base["merchant"]) 
                 if tpl:
                     merged_params: dict[str, str] = {}
                     if tpl.default_params:
