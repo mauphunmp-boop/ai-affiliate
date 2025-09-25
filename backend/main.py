@@ -18,7 +18,7 @@ from sqlalchemy import text, or_, and_, func
 from ai_service import suggest_products_with_config
 import models, schemas, crud
 from database import Base, engine, SessionLocal, apply_simple_migrations
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
 from accesstrade_service import (
     fetch_products, map_at_product_to_offer, _check_url_alive, fetch_promotions,
     fetch_campaign_detail, fetch_commission_policies  # NEW
@@ -710,7 +710,7 @@ class CampaignsSyncReq(BaseModel):
     - limit_per_page, page_concurrency, window_pages, throttle_ms: tinh chỉnh tốc độ vs độ ổn định.
     - merchant: nếu truyền sẽ lọc theo merchant sau khi fetch.
     """
-    statuses: List[str] | None = None
+    statuses: List[str] = Field(default_factory=lambda: ["running", "paused"])
     only_my: bool = True
     enrich_user_status: bool = True
     limit_per_page: int = 50
@@ -2126,11 +2126,15 @@ class IngestCommissionsReq(ProviderReq, BaseModel):
 async def ingest_campaigns_sync_unified(
     req: CampaignsSyncUnifiedReq = Body(
         ...,
-        examples={
-            "default": {
-                "summary": "Chạy running + paused (mặc định)",
-                "value": {"provider": "accesstrade", "statuses": ["running", "paused"], "only_my": True, "throttle_ms": 50}
-            }
+        example={
+            "provider": "accesstrade",
+            "statuses": ["running", "paused"],
+            "only_my": True,
+            "enrich_user_status": True,
+            "limit_per_page": 50,
+            "page_concurrency": 6,
+            "window_pages": 10,
+            "throttle_ms": 50
         }
     ),
     db: Session = Depends(get_db)
