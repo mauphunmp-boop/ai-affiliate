@@ -131,3 +131,20 @@ class Promotion(Base):
     link = Column(String, nullable=True)           # link KM (nếu có)
 
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
+
+# --- NEW: bảng web_vitals (lưu các chỉ số hiệu năng từ frontend) ---
+class WebVitalMetric(Base):
+    __tablename__ = "web_vitals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, index=True)                 # LCP, CLS, INP...
+    value = Column(Float)
+    rating = Column(String, index=True, nullable=True)  # good/needs-improvement/poor
+    delta = Column(Float, nullable=True)
+    metric_id = Column(String, index=True, nullable=True)  # id nội bộ từ web-vitals
+    navigation_type = Column(String, nullable=True)       # navigate / reload / back-forward
+    url = Column(Text, nullable=True)
+    referrer = Column(Text, nullable=True)
+    session_id = Column(String, index=True, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True)
+    extra = Column(Text, nullable=True)  # JSON tuỳ ý (attribution, sources, ...)

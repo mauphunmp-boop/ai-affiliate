@@ -1,8 +1,35 @@
 import axios from "axios";
 
+let notifyHandler = null; // sẽ được đăng ký từ NotificationProvider khi khởi tạo app
+export const __registerNotifier = (fn) => { notifyHandler = fn; };
+
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:8000",
 });
+
+function normalizeAxiosError(error) {
+  if (!error) return { message: 'Lỗi không xác định' };
+  if (error.response) {
+    const d = error.response.data;
+    const msg = d?.detail || d?.message || error.message || 'Lỗi máy chủ';
+    return { message: msg, status: error.response.status, data: d };
+  }
+  if (error.request) return { message: 'Không nhận được phản hồi từ máy chủ', network: true };
+  return { message: error.message || 'Lỗi không xác định' };
+}
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    const norm = normalizeAxiosError(err);
+    err.normalized = norm;
+    const status = norm.status;
+    if (notifyHandler && (norm.network || (status && status >= 500))) {
+      notifyHandler('error', norm.message);
+    }
+    return Promise.reject(err);
+  }
+);
 
 export default api;
 
@@ -15,6 +42,9 @@ export const deleteLink = (id) => api.delete(`/links/${id}`);
 // ====== Helpers cho API Configs ======
 export const upsertApiConfig = (payload) => api.post("/api-configs/upsert", payload);
 export const listApiConfigs = () => api.get("/api-configs");
+// Settings & policy helpers (link-check rotate config shares same flags storage)
+export const setLinkcheckConfig = (payload={}) => api.post('/settings/linkcheck/config', payload);
+export const getLinkcheckFlags = () => api.post('/settings/linkcheck/config'); // POST without body returns current flags
 
 // ====== AI Suggest ======
 export const aiSuggest = (query, provider = "groq") =>
@@ -26,3 +56,6 @@ export const getOffers = (merchant) =>
 
 // Affiliate convert (dùng cho Chatbot/UI trước khi render link)
 export const affConvert = (payload) => api.post("/aff/convert", payload);
+
+// ====== Metrics (Web Vitals) ======
+export const submitWebVitals = (batch) => api.post('/metrics/web-vitals', batch);

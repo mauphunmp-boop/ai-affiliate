@@ -11,6 +11,12 @@ Priority:
 """
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Nếu đang chạy pytest (PYTEST_CURRENT_TEST được set) hoặc TESTING=1 mà chưa có DATABASE_URL
+# -> dùng SQLite file cục bộ để tránh treo vì cố gắng kết nối Postgres 'db' không tồn tại.
+if (not DATABASE_URL) and (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING") == "1"):
+    DATABASE_URL = "sqlite:///./test.db"
+
 if not DATABASE_URL:
     # Lấy DSN từ biến môi trường (docker-compose đã đặt sẵn)
     DB_USER = os.getenv("POSTGRES_USER", "affiliate_user")
@@ -131,6 +137,20 @@ def apply_simple_migrations(engine) -> None:
                         )
                         """
                     ))
+        except Exception:
+            pass
+
+        # Create simple index for web_vitals (name + timestamp) if table exists and index missing
+        try:
+            if 'web_vitals' in inspector.get_table_names():
+                # crude check for existing index name
+                ix_rows = []
+                if engine.dialect.name == 'postgresql':
+                    ix_rows = conn.execute(text("SELECT indexname FROM pg_indexes WHERE tablename='web_vitals'"))
+                # For SQLite we skip (auto fast enough) unless manual create
+                names = {r[0] for r in ix_rows} if ix_rows else set()
+                if engine.dialect.name == 'postgresql' and 'ix_web_vitals_name_ts' not in names:
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_vitals_name_ts ON web_vitals (name, timestamp DESC)"))
         except Exception:
             pass
 

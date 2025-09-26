@@ -4,7 +4,7 @@ import os, hmac, hashlib, base64, json, time, asyncio
 from urllib.parse import urlparse, quote_plus, parse_qsl, urlencode, urlunparse
 from typing import Optional, Dict, List, Any, Literal
 
-from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body, Query
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from providers import ProviderRegistry, ProviderOps
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -19,6 +19,7 @@ from ai_service import suggest_products_with_config
 import models, schemas, crud
 from database import Base, engine, SessionLocal, apply_simple_migrations
 from pydantic import BaseModel, HttpUrl, Field
+from datetime import datetime, UTC, timedelta
 from accesstrade_service import (
     fetch_products, map_at_product_to_offer, _check_url_alive, fetch_promotions,
     fetch_campaign_detail, fetch_commission_policies  # NEW
@@ -35,6 +36,7 @@ tags_metadata = [
     {"name": "Offers 🛒", "description": "Sản phẩm/offer: liệt kê, cập nhật, xoá, import Excel, kiểm tra link sống."},
     {"name": "Ingest 🌐", "description": "Đồng bộ dữ liệu từ nhà cung cấp (Accesstrade): campaigns, datafeeds, promotions, top products."},
     {"name": "AI 🤖", "description": "Các tính năng AI: gợi ý sản phẩm và kiểm tra nhanh."},
+    {"name": "Metrics 📈", "description": "Thu thập & tra cứu Web Vitals từ frontend."},
 ]
 
 app = FastAPI(
@@ -152,12 +154,18 @@ def health(db: Session = Depends(get_db)):
     )
 )
 def health_migrations(db: Session = Depends(get_db)):
-    info: dict[str, any] = {"ok": True, "engine": db.bind.dialect.name if db.bind else None}
+    # Defensive: một số trình phân tích tĩnh không biết chắc db.bind tồn tại
+    engine_name = None
+    try:
+        engine_name = getattr(getattr(getattr(db, 'bind', None), 'dialect', None), 'name', None)
+    except Exception:
+        engine_name = None
+    info: dict = {"ok": True, "engine": engine_name}
     try:
         # Kiểm tra tồn tại cột platform trong affiliate_templates
         has_platform = False
         has_legacy_constraint = False
-        if db.bind.dialect.name == "sqlite":
+        if engine_name == "sqlite":
             rows = db.execute(text("PRAGMA table_info('affiliate_templates')")).fetchall()
             has_platform = any(r[1] == 'platform' for r in rows)
         else:
@@ -169,7 +177,7 @@ def health_migrations(db: Session = Depends(get_db)):
                 SELECT 1 FROM pg_constraint c
                 JOIN pg_class t ON c.conrelid = t.oid
                 WHERE t.relname = 'affiliate_templates' AND c.conname = 'uq_merchant_network'
-            """)).fetchone() if db.bind.dialect.name == 'postgresql' else None
+            """)).fetchone() if engine_name == 'postgresql' else None
             has_legacy_constraint = bool(chk)
         info.update({
             "affiliate_templates_platform_column": has_platform,
@@ -178,6 +186,56 @@ def health_migrations(db: Session = Depends(get_db)):
     except Exception as e:
         info.update({"ok": False, "error": str(e)})
     return info
+
+@app.get(
+    "/health/full",
+    tags=["System 🛠️"],
+    summary="Tổng hợp health + migrations + counts",
+    description=(
+        "Gom thông tin /health & /health/migrations & số lượng bản ghi chính.\n"
+        "Dùng để hiển thị trang System Status tổng quát."
+    )
+)
+def health_full(db: Session = Depends(get_db)):
+    # DB ping
+    db_ok = True
+    db_error: str | None = None
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as e:
+        db_ok = False
+        db_error = str(e)
+
+    # Migrations info (tái sử dụng logic ở trên thay vì gọi HTTP)
+    mig = health_migrations(db)  # type: ignore
+
+    # Counts (best-effort)
+    counts = {}
+    try:
+        counts["links"] = db.execute(text("SELECT COUNT(1) FROM affiliate_links")).scalar() or 0
+    except Exception:
+        counts["links"] = None
+    try:
+        counts["templates"] = db.execute(text("SELECT COUNT(1) FROM affiliate_templates")).scalar() or 0
+    except Exception:
+        counts["templates"] = None
+    try:
+        counts["offers"] = db.execute(text("SELECT COUNT(1) FROM offers")).scalar() or 0
+    except Exception:
+        counts["offers"] = None
+
+    payload = {
+        "ok": bool(db_ok and mig.get("ok")),
+        "now": datetime.now(UTC).isoformat(),
+        "version": app.version,
+        "db": {"ok": db_ok, "error": db_error},
+        "migrations": mig,
+        "counts": counts,
+        "env": {
+            "AT_MOCK": bool(os.getenv("AT_MOCK")),
+        }
+    }
+    return payload
 
 # =====================================================================
 #                       AFFILIATE — SAFE SHORTLINK
@@ -848,6 +906,307 @@ def delete_shortlink(token: str, db: Session = Depends(get_db)):
     return {"ok": True, "deleted": token}
 
 # =====================================================================
+#                      NEW: Web Vitals Metrics (Step 5)
+# =====================================================================
+class WebVitalsBatch(BaseModel):
+    metrics: list[schemas.WebVitalIn]
+    client_ts: float | None = None  # thời điểm flush từ client (epoch ms)
+
+@app.post(
+    "/metrics/web-vitals",
+    tags=["Metrics 📈"],
+    summary="Gửi batch Web Vitals",
+    description=(
+        "Nhận danh sách chỉ số Web Vitals từ frontend (batch). Mỗi metric gồm name,value,rating,delta,...\n"
+        "Server lưu thô để phân tích sau. Trả về số lượng insert thành công."),
+)
+def ingest_web_vitals(batch: WebVitalsBatch, db: Session = Depends(get_db)):
+    inserted = 0
+    for m in batch.metrics:
+        try:
+            row = models.WebVitalMetric(
+                name=m.name[:40],
+                value=m.value,
+                rating=(m.rating or None),
+                delta=m.delta,
+                metric_id=m.metric_id[:80] if m.metric_id else None,
+                navigation_type=m.navigation_type,
+                url=(m.url[:2048] if m.url else None),
+                referrer=(m.referrer[:2048] if m.referrer else None),
+                session_id=(m.session_id[:64] if m.session_id else None),
+                extra=json.dumps(m.extra) if m.extra else None,
+            )
+            # map ts (ms) -> timestamp nếu có
+            # (Optional) map ts provided by client -> ignore to avoid Column assignment confusion
+            db.add(row)
+            inserted += 1
+        except Exception:
+            db.rollback()
+    try:
+        db.commit()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+    return {"ok": True, "inserted": inserted}
+
+@app.get(
+    "/metrics/web-vitals",
+    tags=["Metrics 📈"],
+    response_model=list[schemas.WebVitalOut],
+    summary="Liệt kê Web Vitals",
+    description="Truy vấn nhanh các metric đã thu thập (giới hạn 500 bản ghi gần nhất)."
+)
+def list_web_vitals(
+    name: str | None = Query(None, description="Lọc theo tên metric: LCP/CLS/INP..."),
+    rating: str | None = Query(None, description="Lọc theo rating: good / needs-improvement / poor"),
+    url_sub: str | None = Query(None, description="Lọc URL chứa chuỗi (LIKE %...%)"),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db)
+):
+    q = db.query(models.WebVitalMetric).order_by(models.WebVitalMetric.id.desc())
+    if name:
+        q = q.filter(models.WebVitalMetric.name == name)
+    if rating:
+        q = q.filter(models.WebVitalMetric.rating == rating)
+    if url_sub:
+        like = f"%{url_sub}%"
+        q = q.filter(models.WebVitalMetric.url.ilike(like)) if hasattr(models.WebVitalMetric.url, 'ilike') else q.filter(models.WebVitalMetric.url.like(like))
+    rows = q.limit(limit).all()
+    out: list[schemas.WebVitalOut] = []
+    for r in rows:
+        extra = None
+        if r.extra:
+            try:
+                extra = json.loads(r.extra)
+            except Exception:
+                pass
+        out.append(schemas.WebVitalOut(
+            id=r.id,
+            name=r.name,
+            value=r.value,
+            rating=r.rating,
+            delta=r.delta,
+            metric_id=r.metric_id,
+            navigation_type=r.navigation_type,
+            url=r.url,
+            referrer=r.referrer,
+            session_id=r.session_id,
+            ts=int(r.timestamp.timestamp()*1000) if r.timestamp else None,
+            timestamp=r.timestamp,
+            extra=extra,
+        ))
+    return out
+
+@app.get(
+    "/metrics/web-vitals/summary",
+    tags=["Metrics 📈"],
+    summary="Tổng hợp Web Vitals theo khoảng thời gian",
+    description=(
+        "Trả về thống kê nhóm theo metric name trong khoảng window_minutes (mặc định 60).\n"
+        "Gồm: count, avg, p50, p75, p95 (tính đơn giản trong Python), phân bố rating (%)."),
+)
+def summary_web_vitals(
+    window_minutes: int = Query(60, ge=1, le=24*60, description="Khoảng thời gian tính (phút)"),
+    max_rows: int = Query(5000, ge=100, le=20000, description="Giới hạn bản ghi đọc để tính (bảo vệ bộ nhớ)"),
+    db: Session = Depends(get_db)
+):
+    # Lấy dữ liệu gần nhất trong window (khoảng thời gian) giới hạn max_rows
+    cutoff = datetime.utcnow().replace(tzinfo=UTC) - timedelta(minutes=window_minutes)
+    rows = (
+        db.query(models.WebVitalMetric)
+        .filter(models.WebVitalMetric.timestamp >= cutoff)
+        .order_by(models.WebVitalMetric.id.desc())
+        .limit(max_rows)
+        .all()
+    )
+    bucket: dict[str, list[models.WebVitalMetric]] = {}
+    for r in rows:
+        bucket.setdefault(r.name, []).append(r)
+
+    def _percentile(sorted_vals: list[float], pct: float) -> float | None:
+        if not sorted_vals:
+            return None
+        if len(sorted_vals) == 1:
+            return sorted_vals[0]
+        k = pct * (len(sorted_vals)-1)
+        f = int(k)
+        c = min(f+1, len(sorted_vals)-1)
+        if f == c:
+            return sorted_vals[f]
+        d = k - f
+        return sorted_vals[f] + (sorted_vals[c]-sorted_vals[f]) * d
+
+    summary: dict[str, dict] = {}
+    for name, metrics in bucket.items():
+        values = [m.value for m in metrics if m.value is not None]
+        values.sort()
+        count = len(values)
+        if count == 0:
+            continue
+        avg = sum(values) / count
+        p50 = _percentile(values, 0.50)
+        p75 = _percentile(values, 0.75)
+        p95 = _percentile(values, 0.95)
+        ratings = {"good":0, "needs-improvement":0, "poor":0}
+        for m in metrics:
+            if m.rating in ratings:
+                ratings[m.rating] += 1
+        total_r = sum(ratings.values()) or 1
+        summary[name] = {
+            "count": count,
+            "avg": avg,
+            "p50": p50,
+            "p75": p75,
+            "p95": p95,
+            "ratings": ratings,
+            "ratings_pct": {k: round(v*100/total_r,2) for k,v in ratings.items()},
+        }
+    return {"window_minutes": window_minutes, "rows_sampled": sum(len(v) for v in bucket.values()), "metrics": summary}
+
+@app.get(
+    "/metrics/web-vitals/trends",
+    tags=["Metrics 📈"],
+    summary="Chuỗi thời gian (trends) Web Vitals",
+    description=(
+        "Trả về chuỗi time-series p50/p75/p95 theo các bucket thời gian đều nhau trong window_minutes.\n"
+        "Có thể truyền nhiều metric qua query 'names' dạng CSV (ví dụ: names=LCP,CLS,INP).\n"
+        "Nếu bỏ trống names sẽ dùng toàn bộ metric có dữ liệu trong cửa sổ (tối đa 6)."
+    )
+)
+def trends_web_vitals(
+    window_minutes: int = Query(60, ge=1, le=24*60, description="Khoảng thời gian tính (phút)"),
+    buckets: int = Query(12, ge=2, le=240, description="Số bucket chia trong khoảng thời gian"),
+    names: str | None = Query(None, description="Danh sách metric CSV: LCP,CLS,INP"),
+    max_rows: int = Query(10000, ge=100, le=50000, description="Giới hạn bản ghi đọc (bảo vệ bộ nhớ)"),
+    db: Session = Depends(get_db)
+):
+    cutoff = datetime.utcnow().replace(tzinfo=UTC) - timedelta(minutes=window_minutes)
+    q = db.query(models.WebVitalMetric).filter(models.WebVitalMetric.timestamp >= cutoff)
+    requested: list[str] | None = None
+    if names:
+        requested = [n.strip() for n in names.split(',') if n.strip()]
+        if requested:
+            q = q.filter(models.WebVitalMetric.name.in_(requested))
+    rows = q.order_by(models.WebVitalMetric.id.desc()).limit(max_rows).all()
+    if not rows:
+        return {
+            "window_minutes": window_minutes,
+            "bucket_minutes": round(window_minutes / buckets, 2),
+            "series": {},
+            "rows_sampled": 0,
+        }
+    # Xác định danh sách metric nếu chưa truyền
+    if not requested:
+        metric_names = []
+        seen = set()
+        for r in rows:
+            if r.name not in seen:
+                seen.add(r.name)
+                metric_names.append(r.name)
+            if len(metric_names) >= 6:  # tránh trả quá nhiều series gây nặng frontend
+                break
+    else:
+        metric_names = requested
+    bucket_span_sec = (window_minutes * 60) / buckets
+    # Chuẩn bị cấu trúc: name -> bucket_index -> list[float]
+    series_values: dict[str, list[list[float]]] = {n: [list() for _ in range(buckets)] for n in metric_names}
+    for r in rows:
+        if r.name not in series_values:
+            continue
+        if not r.timestamp:
+            continue
+        ts = r.timestamp
+        # Nếu timestamp trong DB là naive (SQLite thường lưu naive) → giả định UTC để tránh TypeError
+        try:
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+        except Exception:
+            pass
+        try:
+            diff_sec = (ts - cutoff).total_seconds()
+        except TypeError:
+            # Fallback: nếu vẫn lỗi (mismatch aware/naive), chuyển cả cutoff về naive so sánh thô
+            try:
+                diff_sec = (ts.replace(tzinfo=None) - cutoff.replace(tzinfo=None)).total_seconds()
+            except Exception:
+                continue
+        if diff_sec < 0:
+            continue
+        idx = int(diff_sec // bucket_span_sec)
+        if idx >= buckets:
+            idx = buckets - 1  # gộp vào bucket cuối nếu tràn (do làm tròn)
+        if r.value is not None:
+            series_values[r.name][idx].append(r.value)
+
+    def _percentile(sorted_vals: list[float], pct: float) -> float | None:
+        if not sorted_vals:
+            return None
+        if len(sorted_vals) == 1:
+            return sorted_vals[0]
+        k = pct * (len(sorted_vals)-1)
+        f = int(k)
+        c = min(f+1, len(sorted_vals)-1)
+        if f == c:
+            return sorted_vals[f]
+        d = k - f
+        return sorted_vals[f] + (sorted_vals[c]-sorted_vals[f]) * d
+
+    base_ts = cutoff
+    result: dict[str, list[dict[str, Any]]] = {}
+    for name, buckets_list in series_values.items():
+        series_points: list[dict[str, Any]] = []
+        for i, vals in enumerate(buckets_list):
+            start_ts = base_ts + timedelta(seconds=bucket_span_sec * i)
+            v_sorted = sorted(vals)
+            count = len(v_sorted)
+            avg = (sum(v_sorted) / count) if count else None
+            p50 = _percentile(v_sorted, 0.50)
+            p75 = _percentile(v_sorted, 0.75)
+            p95 = _percentile(v_sorted, 0.95)
+            series_points.append({
+                "t": start_ts.isoformat(),
+                "count": count,
+                "avg": avg,
+                "p50": p50,
+                "p75": p75,
+                "p95": p95,
+            })
+        result[name] = series_points
+
+    return {
+        "window_minutes": window_minutes,
+        "bucket_minutes": round(window_minutes / buckets, 2),
+        "rows_sampled": len(rows),
+        "series": result,
+    }
+
+def require_admin_key(x_admin_key: str | None = Header(None, alias="X-Admin-Key")):
+    """Reusable dependency to enforce admin key if ADMIN_API_KEY env var is set."""
+    admin_key_env = os.getenv("ADMIN_API_KEY")
+    if not admin_key_env:
+        return True  # dev mode (no key required)
+    if not x_admin_key or not hmac.compare_digest(admin_key_env, x_admin_key):
+        raise HTTPException(status_code=401, detail="Unauthorized: admin key invalid")
+    return True
+
+@app.delete(
+    "/metrics/web-vitals",
+    tags=["Metrics 📈"],
+    summary="Xoá toàn bộ Web Vitals",
+    description="Dọn sạch bảng web_vitals (chỉ dùng nội bộ vận hành)."
+)
+def clear_web_vitals(
+    db: Session = Depends(get_db),
+    _auth: bool = Depends(require_admin_key)
+):
+    try:
+        db.execute(text("DELETE FROM web_vitals"))
+        db.commit()
+        return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# =====================================================================
 #                  NEW (Bước 3): Ingest/List từ Accesstrade
 # =====================================================================
 
@@ -1248,6 +1607,95 @@ def list_offers_api(
         out.append(item)
 
     return out
+
+@app.get(
+    "/offers/{offer_id}/extras",
+    tags=["Offers 🛒"],
+    summary="Lấy chi tiết offer + promotions & commission policies (nếu có)",
+    description=(
+        "Trả về thông tin mở rộng của 1 offer.\n"
+        "Nếu offer có campaign_id, API gom thêm promotions và commission_policies thuộc campaign đó.\n"
+        "Structure: {offer, campaign, promotions, commission_policies, counts}."
+    )
+)
+def get_offer_extras(offer_id: int, db: Session = Depends(get_db)):
+    o = crud.get_offer_by_id(db, offer_id)
+    if not o:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    # Chuẩn hoá thông tin offer (tái sử dụng logic list_offers_api một phần)
+    item = {
+        "id": o.id,
+        "title": o.title,
+        "url": o.url,
+        "affiliate_url": o.affiliate_url,
+        "image_url": o.image_url,
+        "merchant": o.merchant,
+        "campaign_id": o.campaign_id,
+        "price": o.price,
+        "currency": o.currency,
+        "status": getattr(o, "status", None) or o.approval_status,
+        "approval_status": o.approval_status,
+        "eligible_commission": o.eligible_commission,
+        "source_type": o.source_type,
+        "affiliate_link_available": o.affiliate_link_available,
+        "product_id": o.product_id,
+        "extra": o.extra,
+        "updated_at": o.updated_at,
+        "desc": None, "cate": None, "shop_name": None, "update_time_raw": None,
+    }
+    try:
+        ex = json.loads(o.extra) if o.extra else {}
+        item["desc"] = ex.get("desc")
+        item["cate"] = ex.get("cate")
+        item["shop_name"] = ex.get("shop_name")
+        item["update_time_raw"] = ex.get("update_time_raw") or ex.get("update_time")
+    except Exception:
+        pass
+
+    campaign = None
+    promotions: list[dict] = []
+    policies: list[dict] = []
+    if o.campaign_id:
+        campaign = db.query(models.Campaign).filter(models.Campaign.campaign_id == o.campaign_id).first()
+        # Lấy promotions/policies (không sort phức tạp để đơn giản & nhanh)
+        promotions = (
+            db.query(models.Promotion)
+            .filter(models.Promotion.campaign_id == o.campaign_id)
+            .order_by(models.Promotion.start_time.desc().nullslast())
+            .limit(100)
+            .all()
+        )
+        policies = (
+            db.query(models.CommissionPolicy)
+            .filter(models.CommissionPolicy.campaign_id == o.campaign_id)
+            .order_by(models.CommissionPolicy.updated_at.desc().nullslast())
+            .limit(100)
+            .all()
+        )
+
+    def serialize(obj):
+        if obj is None:
+            return None
+        # Dùng pydantic schema nếu có để đảm bảo shape (tận dụng Config from_attributes)
+        if isinstance(obj, models.Campaign):
+            return schemas.CampaignOut.model_validate(obj).model_dump()
+        if isinstance(obj, models.Promotion):
+            return schemas.PromotionOut.model_validate(obj).model_dump()
+        if isinstance(obj, models.CommissionPolicy):
+            return schemas.CommissionPolicyOut.model_validate(obj).model_dump()
+        return obj
+
+    data = {
+        "offer": item,
+        "campaign": serialize(campaign),
+        "promotions": [serialize(p) for p in promotions],
+        "commission_policies": [serialize(p) for p in policies],
+        "counts": {
+            "promotions": len(promotions),
+            "commission_policies": len(policies),
+        }
+    }
+    return data
 
 @app.post(
     "/ingest/policy",
@@ -3801,3 +4249,113 @@ def campaign_description_page(campaign_id: str, db: Session = Depends(get_db)):
         </html>
         """
         return HTMLResponse(content=body)
+
+# ---------------- NEW: Campaign extras (detail + promotions + commission policies) ----------------
+@app.get(
+    "/campaigns/{campaign_id}/extras",
+    tags=["Campaigns 📢"],
+    summary="Chi tiết + promotions + commission policies",
+    description=(
+        "Trả về gộp: chi tiết campaign (gọi Accesstrade nếu cần), danh sách promotions theo merchant"
+        " và commission policies (thử nhiều biến thể tham số). Cho frontend hiển thị nhanh trong 1 request."
+    ),
+)
+async def campaign_extras(campaign_id: str, db: Session = Depends(get_db)):
+    detail: dict | None = None
+    promotions: list[dict] = []
+    policies: list[dict] = []
+    merchant: str | None = None
+    # Lấy detail (có thể None nếu API không trả)
+    try:
+        detail = await fetch_campaign_detail(db, campaign_id)
+        if isinstance(detail, dict):
+            merchant = (detail.get("merchant") or detail.get("campaign") or "").lower() or None
+    except Exception as e:
+        detail = {"error": str(e)}
+
+    # Lấy promotions dựa vào merchant
+    if merchant:
+        try:
+            promotions = await fetch_promotions(db, merchant) or []
+        except Exception as e:
+            promotions = [{"error": str(e)}]
+
+    # Lấy commission policies
+    try:
+        policies = await fetch_commission_policies(db, campaign_id) or []
+    except Exception as e:
+        policies = [{"error": str(e)}]
+
+    return {
+        "campaign_id": campaign_id,
+        "merchant": merchant,
+        "detail": detail,
+        "promotions": promotions,
+        "commission_policies": policies,
+        "counts": {
+            "promotions": len(promotions) if isinstance(promotions, list) else None,
+            "commission_policies": len(policies) if isinstance(policies, list) else None,
+        },
+    }
+
+# ---------------- Logs viewer endpoints (đơn giản) ----------------
+@app.get(
+    "/system/logs",
+    tags=["System 🛠️"],
+    summary="Liệt kê file logs JSONL (yêu cầu X-Admin-Key)",
+    description="Trả về danh sách file .jsonl trong thư mục logs + kích thước (bytes). Header: X-Admin-Key."
+)
+def list_logs(request: Request):
+    admin_key = os.getenv("ADMIN_API_KEY")
+    if admin_key:
+        supplied = request.headers.get("X-Admin-Key")
+        if supplied != admin_key:
+            raise HTTPException(status_code=401, detail="Admin key required")
+    log_dir = os.getenv("API_LOG_DIR", "./logs")
+    try:
+        files = []
+        for fn in os.listdir(log_dir):
+            if fn.endswith('.jsonl'):
+                path = os.path.join(log_dir, fn)
+                try:
+                    size = os.path.getsize(path)
+                except Exception:
+                    size = None
+                files.append({"filename": fn, "size": size})
+        files.sort(key=lambda x: x['filename'])
+        return {"ok": True, "files": files}
+    except FileNotFoundError:
+        return {"ok": False, "error": "Log dir not found", "files": []}
+
+@app.get(
+    "/system/logs/{filename}",
+    tags=["System 🛠️"],
+    summary="Xem tail file log JSONL (yêu cầu X-Admin-Key)",
+    description="Đọc N dòng cuối từ file log JSONL (mặc định 200). Header: X-Admin-Key."
+)
+def tail_log(request: Request, filename: str, n: int = Query(200, ge=1, le=2000)):
+    admin_key = os.getenv("ADMIN_API_KEY")
+    if admin_key:
+        supplied = request.headers.get("X-Admin-Key")
+        if supplied != admin_key:
+            raise HTTPException(status_code=401, detail="Admin key required")
+    log_dir = os.getenv("API_LOG_DIR", "./logs")
+    safe_name = os.path.basename(filename)
+    path = os.path.join(log_dir, safe_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File không tồn tại")
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()[-n:]
+        out = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                out.append({"_raw": line})
+        return {"ok": True, "filename": safe_name, "lines": out, "count": len(out)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

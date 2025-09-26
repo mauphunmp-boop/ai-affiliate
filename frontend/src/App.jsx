@@ -19,10 +19,15 @@ import {
 } from "@mui/material";
 import { Add, Edit, Delete } from "@mui/icons-material";
 import api from "./api";
+import { useNotify } from './components/NotificationProvider.jsx';
+import { useT } from './i18n/I18nProvider.jsx';
+import ConfirmDialog from './components/ConfirmDialog.jsx';
 import Suggest from "./Suggest";
 import OfferList from "./OfferList";
 
 export default function App() {
+  const notify = useNotify();
+  const { t } = useT();
   const [links, setLinks] = useState([]);
   const [open, setOpen] = useState(false);
   const [editingLink, setEditingLink] = useState(null);
@@ -66,31 +71,35 @@ export default function App() {
     try {
       if (editingLink) {
         await api.put(`/links/${editingLink.id}`, form);
+        notify('success', 'Đã cập nhật link');
       } else {
         await api.post("/links", form);
+        notify('success', 'Đã tạo link');
       }
       fetchLinks();
       handleClose();
     } catch (error) {
-      console.error("Error saving link:", error);
+      notify('error', error.normalized?.message || 'Lưu link thất bại');
     }
   };
 
-  const handleDelete = async (id) => {
-    if (window.confirm("Bạn có chắc chắn muốn xóa link này?")) {
-      try {
-        await api.delete(`/links/${id}`);
-        fetchLinks();
-      } catch (error) {
-        console.error("Error deleting link:", error);
-      }
-    }
+  const [confirm, setConfirm] = useState({ open:false, id:null });
+  const handleDelete = (id) => setConfirm({ open:true, id });
+  const doDelete = async () => {
+    const id = confirm.id;
+    try {
+      await api.delete(`/links/${id}`);
+      notify('success', 'Đã xoá link');
+      fetchLinks();
+    } catch (error) {
+      notify('error', error.normalized?.message || 'Xoá link thất bại');
+    } finally { setConfirm({ open:false, id:null }); }
   };
 
   return (
     <Container sx={{ mt: 4 }}>
       <Typography variant="h4" gutterBottom>
-        Affiliate Link Manager
+        {t('links_title')}
       </Typography>
       
       {/* KHU VỰC TƯ VẤN AI */}
@@ -104,16 +113,16 @@ export default function App() {
         onClick={() => handleOpen()}
         sx={{ mb: 2 }}
       >
-        Thêm Link
+        {t('links_add')}
       </Button>
       <TableContainer component={Paper}>
         <Table>
           <TableHead>
             <TableRow>
-              <TableCell>Tên</TableCell>
+              <TableCell>{t('links_col_name')}</TableCell>
               <TableCell>URL</TableCell>
               <TableCell>Affiliate URL</TableCell>
-              <TableCell>Hành động</TableCell>
+              <TableCell>{t('col_actions')}</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -134,19 +143,14 @@ export default function App() {
                   <IconButton onClick={() => handleOpen(link)} color="primary">
                     <Edit />
                   </IconButton>
-                  <IconButton
-                    onClick={() => handleDelete(link.id)}
-                    color="error"
-                  >
-                    <Delete />
-                  </IconButton>
+                  <IconButton onClick={() => handleDelete(link.id)} color="error"><Delete /></IconButton>
                 </TableCell>
               </TableRow>
             ))}
             {links.length === 0 && (
               <TableRow>
                 <TableCell colSpan={4} align="center">
-                  Chưa có link nào
+                  {t('links_empty')}
                 </TableCell>
               </TableRow>
             )}
@@ -157,13 +161,13 @@ export default function App() {
       {/* Dialog Form */}
       <Dialog open={open} onClose={handleClose}>
         <DialogTitle>
-          {editingLink ? "Sửa Link" : "Thêm Link Mới"}
+          {editingLink ? t('links_edit_title') : t('links_create_title')}
         </DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             margin="dense"
-            label="Tên"
+            label={t('links_field_name')}
             fullWidth
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -186,12 +190,22 @@ export default function App() {
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleClose}>Hủy</Button>
+          <Button onClick={handleClose}>{t('dlg_cancel')}</Button>
           <Button onClick={handleSave} variant="contained">
-            Lưu
+            {t('dlg_save')}
           </Button>
         </DialogActions>
       </Dialog>
+
+      <ConfirmDialog
+        open={confirm.open}
+        title={t('links_delete_title')}
+        message={t('links_delete_confirm')}
+        onClose={() => setConfirm({ open:false, id:null })}
+        onConfirm={doDelete}
+        danger
+        confirmText={t('action_delete')}
+      />
     </Container>
   );
 }

@@ -203,3 +203,22 @@ class PromotionOut(PromotionBase):
     id: int
     updated_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
+
+# --- NEW: Web Vitals schemas ---
+class WebVitalIn(BaseModel):
+    name: str
+    value: float
+    rating: str | None = None
+    delta: float | None = None
+    metric_id: str | None = None
+    navigation_type: str | None = None
+    url: str | None = None
+    referrer: str | None = None
+    session_id: str | None = None
+    ts: float | None = None  # epoch ms từ client
+    extra: dict | None = None
+
+class WebVitalOut(WebVitalIn):
+    id: int
+    timestamp: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)

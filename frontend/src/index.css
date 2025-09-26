@@ -30,6 +30,51 @@ body {
   min-height: 100vh;
 }
 
+/* Skip link (được thêm trong layout) */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 8px;
+  background: #2563eb;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: top .2s ease;
+  z-index: 2000;
+}
+.skip-link:focus-visible { top: 8px; }
+
+/* Focus ring thống nhất cho interactive elements */
+*:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Dark mode tinh chỉnh */
+@media (prefers-color-scheme: dark) {
+  *:focus-visible { outline-color: #60a5fa; }
+}
+
+/* Giảm chớp nháy khi người dùng bật reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+@keyframes pulse-bg {
+  0% { box-shadow: 0 0 0 0 rgba(37,99,235,0.0); background-color: rgba(37,99,235,0.08); }
+  40% { box-shadow: 0 0 0 4px rgba(37,99,235,0.15); background-color: rgba(37,99,235,0.18); }
+  100% { box-shadow: 0 0 0 0 rgba(37,99,235,0.0); background-color: transparent; }
+}
+
+@keyframes pulse {
+  0% { color: inherit; }
+  35% { color: #2563eb; }
+  100% { color: inherit; }
+}
+
 h1 {
   font-size: 3.2em;
   line-height: 1.1;
