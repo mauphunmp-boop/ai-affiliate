@@ -23,3 +23,6 @@ export const aiSuggest = (query, provider = "groq") =>
 // Thêm sau đoạn trên (mới hoàn toàn) — ngay dưới phần "AI Suggest"
 export const getOffers = (merchant) =>
   api.get(`/offers${merchant ? `?merchant=${encodeURIComponent(merchant)}` : ""}`);
+
+// Affiliate convert (dùng cho Chatbot/UI trước khi render link)
+export const affConvert = (payload) => api.post("/aff/convert", payload);

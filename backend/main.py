@@ -1,7 +1,7 @@
 import logging
 import traceback
 import os, hmac, hashlib, base64, json, time, asyncio
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse, quote_plus, parse_qsl, urlencode, urlunparse
 from typing import Optional, Dict, List, Any, Literal
 
 from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Body, Query
@@ -142,6 +142,43 @@ def health(db: Session = Depends(get_db)):
         logger.exception("Health check failed")
         return {"ok": False, "error": str(e)}
 
+@app.get(
+    "/health/migrations",
+    tags=["System 🛠️"],
+    summary="Tình trạng migration nhẹ",
+    description=(
+        "Báo cáo nhanh các cột/constraint legacy đã xử lý. \n"
+        "Không dùng Alembic: logic nằm trong apply_simple_migrations()."
+    )
+)
+def health_migrations(db: Session = Depends(get_db)):
+    info: dict[str, any] = {"ok": True, "engine": db.bind.dialect.name if db.bind else None}
+    try:
+        # Kiểm tra tồn tại cột platform trong affiliate_templates
+        has_platform = False
+        has_legacy_constraint = False
+        if db.bind.dialect.name == "sqlite":
+            rows = db.execute(text("PRAGMA table_info('affiliate_templates')")).fetchall()
+            has_platform = any(r[1] == 'platform' for r in rows)
+        else:
+            rows = db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='affiliate_templates'"))
+            cols = {r[0] for r in rows}
+            has_platform = 'platform' in cols
+            # check legacy constraint
+            chk = db.execute(text("""
+                SELECT 1 FROM pg_constraint c
+                JOIN pg_class t ON c.conrelid = t.oid
+                WHERE t.relname = 'affiliate_templates' AND c.conname = 'uq_merchant_network'
+            """)).fetchone() if db.bind.dialect.name == 'postgresql' else None
+            has_legacy_constraint = bool(chk)
+        info.update({
+            "affiliate_templates_platform_column": has_platform,
+            "legacy_constraint_uq_merchant_network_present": has_legacy_constraint,
+        })
+    except Exception as e:
+        info.update({"ok": False, "error": str(e)})
+    return info
+
 # =====================================================================
 #                       AFFILIATE — SAFE SHORTLINK
 # =====================================================================
@@ -157,8 +194,16 @@ ALLOWED_DOMAINS = {
 }
 
 def _is_allowed_domain(merchant: str, url: str) -> bool:
+    """Kiểm tra URL có thuộc domain whitelist của merchant không.
+    - Bỏ prefix www. và cổng (port) khi so sánh
+    - So khớp theo hậu tố domain (endswith)
+    """
     try:
         netloc = urlparse(url).netloc.lower()
+        if ":" in netloc:
+            netloc = netloc.split(":", 1)[0]
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
         return any(netloc.endswith(dom) for dom in ALLOWED_DOMAINS.get(merchant, []))
     except Exception:
         return False
@@ -170,6 +215,23 @@ def _apply_template(template: str, target_url: str, params: Optional[Dict[str, s
         for k, v in params.items():
             aff = aff.replace("{" + k + "}", str(v))
     return aff
+
+def _append_missing_query_params(url: str, extras: Dict[str, str], keys: list[str]) -> str:
+    """Bổ sung các query param còn thiếu vào URL (không ghi đè giá trị hiện có)."""
+    try:
+        u = urlparse(url)
+        q = dict(parse_qsl(u.query, keep_blank_values=True))
+        changed = False
+        for k in keys:
+            if k in extras and k not in q:
+                q[k] = str(extras[k])
+                changed = True
+        if not changed:
+            return url
+        new_query = urlencode(q, doseq=True)
+        return urlunparse((u.scheme, u.netloc, u.path, u.params, new_query, u.fragment))
+    except Exception:
+        return url
 
 def _make_token(affiliate_url: str, ts: Optional[int] = None) -> str:
     payload = {"u": affiliate_url, "ts": ts or int(time.time())}
@@ -506,6 +568,55 @@ def upsert_template(
     tpl = crud.upsert_affiliate_template(db, data)
     return tpl
 
+@app.post(
+    "/aff/templates/auto-from-campaigns",
+    tags=["Affiliate 🎯"],
+    summary="Sinh mẫu deeplink placeholder từ các campaign đã APPROVED",
+    description=(
+        "Quét DB tìm các campaign đang running và user_registration_status=APPROVED, lấy danh sách merchant/platform.\n"
+        "Với mỗi platform chưa có template (network, platform) sẽ tạo một template placeholder dạng:\n"
+        "https://YOUR_BASE_DEEP_LINK/?url={target}&sub1={sub1}&sub2={sub2}&utm_source={utm_source}&utm_medium={utm_medium}&utm_campaign={utm_campaign}\n"
+        "Bạn cần sửa lại phần YOUR_BASE_DEEP_LINK cho đúng domain tracking của network (vd: go.isclix.com/deep_link/XXXX)."
+    )
+)
+def auto_generate_templates(
+    network: str = Body(..., embed=True, description="Tên network, ví dụ: accesstrade"),
+    db: Session = Depends(get_db)
+):
+    # 1) Lấy merchants/platform đã APPROVED + running
+    from sqlalchemy import func as _f
+    campaigns = db.query(models.Campaign).filter(
+        models.Campaign.status == "running",
+        _f.upper(_f.trim(models.Campaign.user_registration_status)) == "APPROVED"
+    ).all()
+    platforms = sorted({(c.merchant or '').lower() for c in campaigns if c.merchant})
+
+    created: list[dict] = []
+    skipped: list[str] = []
+    for plat in platforms:
+        # CHỈ kiểm tra template tồn tại trực tiếp cho (network, platform). Không dùng fallback network-only.
+        from models import AffiliateTemplate
+        direct = db.query(models.AffiliateTemplate).filter(
+            models.AffiliateTemplate.network == network,
+            models.AffiliateTemplate.platform == plat
+        ).first()
+        if direct:
+            skipped.append(plat)
+            continue
+        placeholder = (
+            "https://YOUR_BASE_DEEP_LINK/?url={target}&sub1={sub1}&sub2={sub2}"
+            "&utm_source={utm_source}&utm_medium={utm_medium}&utm_campaign={utm_campaign}"
+        )
+        tpl = crud.upsert_affiliate_template(db, schemas.AffiliateTemplateCreate(
+            network=network,
+            platform=plat,
+            template=placeholder,
+            default_params={"utm_source": "chatbot"},
+            enabled=True,
+        ))  # merchant legacy sẽ được tự gán fallback trong CRUD
+        created.append({"platform": plat, "template_id": tpl.id})
+    return {"ok": True, "network": network, "created": created, "skipped": skipped}
+
 @app.put(
     "/aff/templates/{template_id}",
     tags=["Affiliate 🎯"],
@@ -610,9 +721,11 @@ def aff_convert(
     ),
     db: Session = Depends(get_db)
 ):
+    # Platform ưu tiên truyền rõ ràng; nếu không có, sẽ thử dùng template network-only
     platform = req.platform
-    if platform and (not _is_allowed_domain(platform, str(req.url))):
-        raise HTTPException(status_code=400, detail=f"URL không thuộc domain hợp lệ của {platform}")
+    if platform:
+        if not _is_allowed_domain(platform, str(req.url)):
+            raise HTTPException(status_code=400, detail=f"URL không thuộc domain hợp lệ của {platform}")
 
     tpl = crud.get_affiliate_template_by_network(db, req.network, platform=platform)
     if not tpl:
@@ -624,9 +737,35 @@ def aff_convert(
     if req.params:
         merged.update(req.params)
 
+    # Tiêm mặc định cho chatbot nếu chưa có
+    # - sub1: ưu tiên từ req.params; nếu không có, dùng timestamp để tránh trống (client nên truyền userId/sessionId)
+    # - sub2: mặc định 'chatbot'
+    # - utm_source: 'chatbot'; utm_medium: 'messenger' (có thể override bởi params); utm_campaign: aff_{platform}
+    if "sub1" not in merged:
+        merged["sub1"] = str(int(time.time()))  # fallback an toàn; client nên override
+    if "sub2" not in merged:
+        merged["sub2"] = "chatbot"
+    if "utm_source" not in merged:
+        merged["utm_source"] = "chatbot"
+    if "utm_medium" not in merged:
+        merged["utm_medium"] = "messenger"
+    if "utm_campaign" not in merged:
+        merged["utm_campaign"] = f"aff_{platform or 'all'}"
+
     affiliate_url = _apply_template(tpl.template, str(req.url), merged)
+    # Nếu template không có placeholder, vẫn đảm bảo các tham số bắt buộc/utm có trong URL
+    affiliate_url = _append_missing_query_params(
+        affiliate_url,
+        merged,
+        ["sub1", "sub2", "utm_source", "utm_medium", "utm_campaign"],
+    )
     token = _make_token(affiliate_url)
     short_url = f"/r/{token}"
+    # Persist shortlink mapping for stats (idempotent)
+    try:
+        crud.create_shortlink_if_not_exists(db, token, affiliate_url)
+    except Exception:
+        pass
     return ConvertRes(affiliate_url=affiliate_url, short_url=short_url)
 
 # Redirect từ shortlink -> deeplink thật
@@ -634,11 +773,72 @@ def aff_convert(
     "/r/{token}",
     tags=["Affiliate 🎯"],
     summary="Redirect shortlink",
-    description="Giải mã token và chuyển hướng 302 tới **affiliate_url** thực tế."
+    description="Giải mã token và chuyển hướng 302 tới **affiliate_url** thực tế; đồng thời tăng bộ đếm click nếu đã lưu."
 )
-def redirect_short_link(token: str):
+def redirect_short_link(token: str, db: Session = Depends(get_db)):
     affiliate_url = _parse_token(token)
+    try:
+        crud.increment_shortlink_click(db, token)
+    except Exception:
+        pass
     return RedirectResponse(url=affiliate_url, status_code=302)
+
+# Endpoint thống kê shortlinks (đơn giản)
+@app.get(
+    "/aff/shortlinks",
+    tags=["Affiliate 🎯"],
+    summary="Danh sách shortlinks",
+    response_model=list[schemas.ShortlinkOut],
+    description="Liệt kê các shortlink đã phát sinh qua /aff/convert (có click_count)."
+)
+def list_shortlinks(
+    skip: int = 0,
+    limit: int = 50,
+    q: str | None = Query(None, description="Lọc theo token hoặc chứa trong affiliate_url"),
+    min_clicks: int = Query(0, ge=0, description="Chỉ lấy shortlink có click_count >= giá trị này"),
+    order: str = Query("newest", description="Sắp xếp: newest | clicks_desc | oldest"),
+    db: Session = Depends(get_db)
+):
+    qset = db.query(models.Shortlink)
+    if q:
+        like = f"%{q}%"
+        from sqlalchemy import or_
+        qset = qset.filter(or_(models.Shortlink.token.like(like), models.Shortlink.affiliate_url.like(like)))
+    if min_clicks > 0:
+        qset = qset.filter(models.Shortlink.click_count >= min_clicks)
+    if order == "clicks_desc":
+        qset = qset.order_by(models.Shortlink.click_count.desc())
+    elif order == "oldest":
+        qset = qset.order_by(models.Shortlink.created_at.asc())
+    else:  # newest
+        qset = qset.order_by(models.Shortlink.created_at.desc())
+    rows = qset.offset(skip).limit(min(limit, 200)).all()
+    return rows
+
+@app.get(
+    "/aff/shortlinks/{token}",
+    tags=["Affiliate 🎯"],
+    summary="Chi tiết shortlink",
+    response_model=schemas.ShortlinkOut,
+    description="Lấy thông tin chi tiết 1 shortlink theo token."
+)
+def get_shortlink_detail(token: str, db: Session = Depends(get_db)):
+    obj = crud.get_shortlink(db, token)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Shortlink không tồn tại")
+    return obj
+
+@app.delete(
+    "/aff/shortlinks/{token}",
+    tags=["Affiliate 🎯"],
+    summary="Xoá shortlink",
+    description="Xoá 1 shortlink theo token (không ảnh hưởng redirect token đã lưu ở nơi khác)."
+)
+def delete_shortlink(token: str, db: Session = Depends(get_db)):
+    ok = crud.delete_shortlink(db, token)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Shortlink không tồn tại")
+    return {"ok": True, "deleted": token}
 
 # =====================================================================
 #                  NEW (Bước 3): Ingest/List từ Accesstrade
@@ -2139,15 +2339,20 @@ class IngestCommissionsReq(ProviderReq, BaseModel):
 async def ingest_campaigns_sync_unified(
     req: CampaignsSyncUnifiedReq = Body(
         ...,
-        example={
-            "provider": "accesstrade",
-            "statuses": ["running", "paused"],
-            "only_my": True,
-            "enrich_user_status": True,
-            "limit_per_page": 50,
-            "page_concurrency": 6,
-            "window_pages": 10,
-            "throttle_ms": 50
+        examples={
+            "default": {
+                "summary": "Đồng bộ chuẩn",
+                "value": {
+                    "provider": "accesstrade",
+                    "statuses": ["running", "paused"],
+                    "only_my": True,
+                    "enrich_user_status": True,
+                    "limit_per_page": 50,
+                    "page_concurrency": 6,
+                    "window_pages": 10,
+                    "throttle_ms": 50
+                }
+            }
         }
     ),
     db: Session = Depends(get_db)

@@ -104,6 +104,56 @@ def apply_simple_migrations(engine) -> None:
                 # Ignore if another process already applied it.
                 pass
 
+        # Ensure shortlinks table exists (very small table) -- create minimal if metadata.create_all missed
+        try:
+            if 'shortlinks' not in inspector.get_table_names():
+                if engine.dialect.name == 'postgresql':
+                    conn.execute(text(
+                        """
+                        CREATE TABLE IF NOT EXISTS shortlinks (
+                          token VARCHAR PRIMARY KEY,
+                          affiliate_url TEXT NOT NULL,
+                          created_at TIMESTAMPTZ DEFAULT NOW(),
+                          last_click_at TIMESTAMPTZ NULL,
+                          click_count INTEGER DEFAULT 0
+                        )
+                        """
+                    ))
+                else:
+                    conn.execute(text(
+                        """
+                        CREATE TABLE IF NOT EXISTS shortlinks (
+                          token TEXT PRIMARY KEY,
+                          affiliate_url TEXT NOT NULL,
+                          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                          last_click_at TIMESTAMP NULL,
+                          click_count INTEGER DEFAULT 0
+                        )
+                        """
+                    ))
+        except Exception:
+            pass
+
+        # --- LEGACY CLEANUP: Drop old unique constraint (merchant, network) if it still exists ---
+        # Hệ thống mới dùng unique (network, platform). Constraint cũ có thể gây lỗi UniqueViolation khi
+        # auto-generate template mặc dù đã chuyển qua platform-first.
+        try:
+            if engine.dialect.name == "postgresql":
+                # Kiểm tra tồn tại constraint uq_merchant_network
+                chk = conn.execute(text(
+                    """
+                    SELECT 1 FROM pg_constraint c
+                    JOIN pg_class t ON c.conrelid = t.oid
+                    WHERE t.relname = 'affiliate_templates' AND c.conname = 'uq_merchant_network'
+                    """
+                )).fetchone()
+                if chk:
+                    conn.execute(text("ALTER TABLE affiliate_templates DROP CONSTRAINT IF EXISTS uq_merchant_network"))
+            # SQLite không hỗ trợ drop constraint dễ dàng → bỏ qua an toàn.
+        except Exception:
+            # Không dừng startup nếu drop constraint thất bại
+            pass
+
         # Cleanup migration: null-out placeholder strings previously persisted
         try:
             # Works for both Postgres and SQLite (CASE/NULLIF expressions)

@@ -60,6 +60,15 @@ class AffiliateTemplateOut(AffiliateTemplateBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
 
+# --- NEW: Shortlink schemas ---
+class ShortlinkOut(BaseModel):
+    token: str
+    affiliate_url: str
+    click_count: int
+    created_at: datetime | None = None
+    last_click_at: datetime | None = None
+    model_config = ConfigDict(from_attributes=True)
+
 # --- THÊM MỚI: schemas cho ProductOffer ---
 class ProductOfferBase(BaseModel):
     source: str = "accesstrade"

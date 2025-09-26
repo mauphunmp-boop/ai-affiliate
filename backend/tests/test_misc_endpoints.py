@@ -119,7 +119,7 @@ def test_api_configs_crud(client):
 def test_affiliate_templates_and_convert_redirect(client):
     # Upsert a template for shopee
     r_tpl = client.post("/aff/templates/upsert", json={
-        "merchant": "shopee", "network": "accesstrade",
+        "platform": "shopee", "network": "accesstrade",
         "template": "https://go.aff/?url={target}&sub1={sub1}",
         "default_params": {"sub1": "abc"}
     })
@@ -127,7 +127,7 @@ def test_affiliate_templates_and_convert_redirect(client):
 
     # Convert a valid shopee url
     r_conv = client.post("/aff/convert", json={
-        "merchant": "shopee",
+        "platform": "shopee",
         "url": "https://shopee.vn/product/123",
         "params": {"sub1": "xyz"}
     })
@@ -144,7 +144,7 @@ def test_affiliate_templates_and_convert_redirect(client):
 
     # Invalid domain (not whitelisted)
     r_bad = client.post("/aff/convert", json={
-        "merchant": "shopee",
+        "platform": "shopee",
         "url": "https://evil.com/haha"
     })
     assert r_bad.status_code == 400

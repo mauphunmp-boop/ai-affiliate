@@ -220,8 +220,33 @@ def upsert_affiliate_template(db, data: "schemas.AffiliateTemplateCreate"):
         db.add(tpl); db.commit(); db.refresh(tpl)
         return tpl
 
+    # LEGACY UPGRADE PATH:
+    # DB cũ có unique(uq_merchant_network) trên (merchant, network). Khi chuyển sang platform-first,
+    # có thể tồn tại record legacy với merchant=<platform>, platform=NULL. Nếu tạo bản ghi mới với
+    # merchant fallback = <platform> sẽ gây UniqueViolation. Ta phát hiện và nâng cấp record cũ.
+    if getattr(data, "platform", None):
+        legacy = db.query(AffiliateTemplate).filter(
+            AffiliateTemplate.network == data.network,
+            AffiliateTemplate.merchant == data.platform,
+            AffiliateTemplate.platform.is_(None)
+        ).first()
+        if legacy:
+            legacy.platform = data.platform  # gán platform mới
+            legacy.template = data.template
+            legacy.default_params = data.default_params
+            legacy.enabled = data.enabled
+            db.add(legacy); db.commit(); db.refresh(legacy)
+            return legacy
+
+    # NOTE:
+    #  - Cột merchant trong bảng affiliate_templates là LEGACY, trong mã nguồn mới để nullable.
+    #  - Tuy nhiên một số DB đã được tạo trước khi sửa có thể còn ràng buộc NOT NULL.
+    #  - Để tránh IntegrityError (null value in column "merchant") khi tạo mẫu mới,
+    #    ta gán fallback merchant = platform (nếu có) hoặc network.
+    #  - Điều này không ảnh hưởng logic tra cứu vì hệ thống chỉ sử dụng (network, platform) + enabled.
+    fallback_merchant = getattr(data, "platform", None) or data.network
     new_tpl = AffiliateTemplate(
-        merchant=None,
+        merchant=fallback_merchant,
         network=data.network,
         platform=getattr(data, "platform", None),
         template=data.template,
@@ -238,8 +263,9 @@ def update_affiliate_template(db: Session, tpl_id: int, data: "schemas.Affiliate
     tpl = get_affiliate_template_by_id(db, tpl_id)
     if not tpl:
         return None
-    tpl.merchant = data.merchant
+    # merchant là cột legacy trong model; không cập nhật từ request mới
     tpl.network = data.network
+    tpl.platform = getattr(data, "platform", None)
     tpl.template = data.template
     tpl.default_params = data.default_params
     tpl.enabled = data.enabled
@@ -681,3 +707,36 @@ def delete_commission_policies_by_campaign(db: Session, campaign_id: str) -> int
     res = q.delete(synchronize_session=False)
     db.commit()
     return int(res or 0)
+
+# ===== Shortlink CRUD =====
+def get_shortlink(db: Session, token: str):
+    return db.query(models.Shortlink).filter(models.Shortlink.token == token).first()
+
+def create_shortlink_if_not_exists(db: Session, token: str, affiliate_url: str):
+    obj = get_shortlink(db, token)
+    if obj:
+        return obj
+    obj = models.Shortlink(token=token, affiliate_url=affiliate_url)
+    db.add(obj); db.commit(); db.refresh(obj)
+    return obj
+
+def increment_shortlink_click(db: Session, token: str):
+    obj = get_shortlink(db, token)
+    if not obj:
+        return None
+    from datetime import datetime, UTC
+    obj.click_count = (obj.click_count or 0) + 1
+    obj.last_click_at = datetime.now(UTC)
+    db.add(obj); db.commit(); db.refresh(obj)
+    return obj
+
+def list_shortlinks(db: Session, skip: int = 0, limit: int = 50):
+    return db.query(models.Shortlink).order_by(models.Shortlink.created_at.desc()).offset(skip).limit(limit).all()
+
+def delete_shortlink(db: Session, token: str):
+    obj = get_shortlink(db, token)
+    if not obj:
+        return None
+    db.delete(obj)
+    db.commit()
+    return True

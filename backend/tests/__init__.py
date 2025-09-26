@@ -1,0 +1,1 @@
+"""Make tests a package for explicit discovery in some environments."""

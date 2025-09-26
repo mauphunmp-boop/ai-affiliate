@@ -38,6 +38,16 @@ class AffiliateTemplate(Base):
         # Ràng buộc duy nhất theo (network, platform). Lưu ý: NULL trong platform có thể không unique tuỳ DB.
         UniqueConstraint("network", "platform", name="uq_network_platform"),
     )
+
+# --- NEW: bảng shortlinks (lưu mapping token -> affiliate_url + thống kê) ---
+class Shortlink(Base):
+    __tablename__ = "shortlinks"
+    # token đóng vai trò primary key (đủ ngắn gọn nhưng duy nhất nhờ HMAC)
+    token = Column(String, primary_key=True, index=True)
+    affiliate_url = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    last_click_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    click_count = Column(Integer, default=0)
 # --- THÊM MỚI: bảng product_offers ---
 class ProductOffer(Base):
     __tablename__ = "product_offers"
