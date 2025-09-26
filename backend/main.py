@@ -193,6 +193,12 @@ ALLOWED_DOMAINS = {
     "tiki":   ["tiki.vn"],
 }
 
+# Alias platform -> key chính trong ALLOWED_DOMAINS (slug campaign đôi khi khác brand)
+PLATFORM_DOMAIN_ALIASES = {
+    "tikivn": "tiki",
+    "lazadacps": "lazada",
+}
+
 def _is_allowed_domain(merchant: str, url: str) -> bool:
     """Kiểm tra URL có thuộc domain whitelist của merchant không.
     - Bỏ prefix www. và cổng (port) khi so sánh
@@ -204,7 +210,8 @@ def _is_allowed_domain(merchant: str, url: str) -> bool:
             netloc = netloc.split(":", 1)[0]
         if netloc.startswith("www."):
             netloc = netloc[4:]
-        return any(netloc.endswith(dom) for dom in ALLOWED_DOMAINS.get(merchant, []))
+        key = PLATFORM_DOMAIN_ALIASES.get(merchant, merchant)
+        return any(netloc.endswith(dom) for dom in ALLOWED_DOMAINS.get(key, []))
     except Exception:
         return False
 
