@@ -38,3 +38,5 @@ export function ColorModeProvider({ children }) {
 export function useColorMode() {
   return useContext(ColorModeCtx);
 }
+
+export default ColorModeProvider;

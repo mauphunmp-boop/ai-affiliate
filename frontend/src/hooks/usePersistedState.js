@@ -15,7 +15,7 @@ export default function usePersistedState(key, defaultValue, { parse = JSON.pars
   useEffect(() => {
     if (ref.current) clearTimeout(ref.current);
     const run = () => {
-      try { localStorage.setItem(key, serialize(value)); } catch {}
+  try { localStorage.setItem(key, serialize(value)); } catch { /* noop */ }
     };
     if (debounce > 0) ref.current = setTimeout(run, debounce); else run();
     return () => ref.current && clearTimeout(ref.current);

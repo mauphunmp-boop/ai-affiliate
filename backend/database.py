@@ -1,4 +1,5 @@
 import os
+import sys
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import inspect, text
@@ -12,19 +13,32 @@ Priority:
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Nếu đang chạy pytest (PYTEST_CURRENT_TEST được set) hoặc TESTING=1 mà chưa có DATABASE_URL
-# -> dùng SQLite file cục bộ để tránh treo vì cố gắng kết nối Postgres 'db' không tồn tại.
-if (not DATABASE_URL) and (os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING") == "1"):
-    DATABASE_URL = "sqlite:///./test.db"
-
+# --- Chiến lược chọn DB URL ---
+# 1. Nếu người dùng đã chỉ định DATABASE_URL thì dùng luôn.
+# 2. Nếu đang chạy trong phiên pytest (dò qua biến môi trường hoặc module 'pytest') -> dùng SQLite file.
+#    Lý do: tránh phải cài psycopg2 (chưa có wheel Python 3.13 trên Windows) và không cần Postgres thật để unit test.
+# 3. Nếu TESTING=1 cũng dùng SQLite.
+# 4. Ngược lại: fallback Postgres (dành cho môi trường docker-compose).
 if not DATABASE_URL:
-    # Lấy DSN từ biến môi trường (docker-compose đã đặt sẵn)
-    DB_USER = os.getenv("POSTGRES_USER", "affiliate_user")
-    DB_PASS = os.getenv("POSTGRES_PASSWORD", "affiliate_pass")
-    DB_NAME = os.getenv("POSTGRES_DB", "affiliate_db")
-    DB_HOST = os.getenv("POSTGRES_HOST", "db")   # trong Docker: service name "db"
-    DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-    DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    running_pytest = bool(os.getenv("PYTEST_CURRENT_TEST")) or ('pytest' in sys.modules)  # type: ignore[name-defined]
+    if running_pytest or os.getenv("TESTING") == "1":
+        DATABASE_URL = "sqlite:///./test.db"
+    else:
+        DB_USER = os.getenv("POSTGRES_USER", "affiliate_user")
+        DB_PASS = os.getenv("POSTGRES_PASSWORD", "affiliate_pass")
+        DB_NAME = os.getenv("POSTGRES_DB", "affiliate_db")
+        DB_HOST = os.getenv("POSTGRES_HOST", "db")   # trong Docker: service name "db"
+        DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+        DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+# Nếu vì lý do gì đó vẫn rơi vào Postgres nhưng chưa cài psycopg2, fallback mềm sang SQLite để test không hỏng.
+if DATABASE_URL.startswith("postgresql"):
+    try:
+        import psycopg2  # type: ignore
+    except Exception:
+        # Ghi log nhẹ (dùng print tránh logger chưa init)
+        print("[database] psycopg2 không khả dụng -> fallback SQLite test.db cho môi trường test.")
+        DATABASE_URL = "sqlite:///./test.db"
 
 # SQLite needs special connect_args for thread check
 connect_args = {}

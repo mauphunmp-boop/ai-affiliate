@@ -1,6 +1,9 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+// Không mock MUI để kiểm tra tương tác thật (Snackbar auto hide + nút close biểu tượng)
+
 import { NotificationProvider, useNotify } from '../../components/NotificationProvider.jsx';
 
 function Demo() {
@@ -14,13 +17,14 @@ function Demo() {
 
 describe('NotificationProvider queue & dedupe', () => {
   it('hiển thị lần lượt và bỏ qua thông báo trùng lặp gần', async () => {
-    render(<NotificationProvider autoHideDuration={300}><Demo /></NotificationProvider>);
-    await userEvent.click(screen.getByText('Push'));
-    // Thông báo đầu tiên A
+    const user = userEvent.setup();
+    render(<NotificationProvider autoHideDuration={999999} shiftDelay={0} testImmediate><Demo /></NotificationProvider>);
+    await user.click(screen.getByText('Push'));
     expect(await screen.findByText('A')).toBeInTheDocument();
-    // đợi auto hide
-    await new Promise(r=>setTimeout(r, 350));
-    // Thông báo tiếp theo phải là B (A duplicate bị bỏ)
-    expect(await screen.findByText('B')).toBeInTheDocument();
+    // Click nút đóng (aria-label="Close") để kích hoạt shift thủ công
+    const closeBtn = screen.getByRole('button', { name: /close/i });
+    await user.click(closeBtn);
+    await waitFor(() => expect(screen.getByText('B')).toBeInTheDocument());
+    expect(screen.queryByText('A')).not.toBeInTheDocument();
   });
 });

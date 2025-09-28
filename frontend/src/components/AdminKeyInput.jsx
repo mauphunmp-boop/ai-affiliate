@@ -6,7 +6,7 @@ export default function AdminKeyInput({ storageKey = 'admin_api_key' }) {
   const onChange = (e) => {
     const v = e.target.value;
     setValue(v);
-    try { localStorage.setItem(storageKey, v); } catch {}
+  try { localStorage.setItem(storageKey, v); } catch { /* noop */ }
   };
   return (
     <Tooltip title="Admin key (used for protected ops)">

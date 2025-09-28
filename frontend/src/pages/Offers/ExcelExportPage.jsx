@@ -4,7 +4,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import DescriptionIcon from '@mui/icons-material/Description';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import { downloadExportExcel, downloadExportTemplate } from '../../../api/excel';
+import { downloadExportExcel, downloadExportTemplate } from '../../api/excel.js';
 
 // Utility để trigger download blob
 function triggerDownload(blob, fallbackName) {

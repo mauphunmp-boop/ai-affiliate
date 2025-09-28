@@ -1,0 +1,12 @@
+FROM node:20-alpine
+WORKDIR /app
+
+# Chỉ copy file khai báo phụ thuộc để cache layer install
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+
+# Copy phần còn lại (code sẽ bị volume mount đè trong chế độ dev)
+COPY . .
+
+EXPOSE 5173
+CMD ["npm","run","dev","--","--host","0.0.0.0"]

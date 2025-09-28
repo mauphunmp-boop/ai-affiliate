@@ -29,7 +29,7 @@ async function flushNow(submitFn) {
   const batch = _buffer.splice(0, _buffer.length);
   try {
     await submitFn({ metrics: batch, client_ts: Date.now() });
-  } catch (e) {
+  } catch {
     // network fail -> re-persist
     _buffer.unshift(...batch);
     persistBuffer();

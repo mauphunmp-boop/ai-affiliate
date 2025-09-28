@@ -8,7 +8,7 @@ export default function OnboardingTip() {
   const [open, setOpen] = React.useState(() => {
     try { return localStorage.getItem(LS_KEY) !== '1'; } catch { return true; }
   });
-  const dismiss = () => { setOpen(false); try { localStorage.setItem(LS_KEY,'1'); } catch{} };
+  const dismiss = () => { setOpen(false); try { localStorage.setItem(LS_KEY,'1'); } catch { /* noop */ } };
   if (!open) return null;
   return (
     <Collapse in={open} unmountOnExit>

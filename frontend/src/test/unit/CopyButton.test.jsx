@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import CopyButton from '../../components/CopyButton.jsx';
 import { NotificationProvider } from '../../components/NotificationProvider.jsx';
 
-global.navigator.clipboard = { writeText: vi.fn().mockResolvedValue() };
+globalThis.navigator.clipboard = { writeText: vi.fn().mockResolvedValue() };
 
 describe('CopyButton', () => {
   it('đổi tooltip sang Đã copy sau khi bấm', async () => {

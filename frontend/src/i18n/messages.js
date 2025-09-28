@@ -285,17 +285,7 @@ export const messages = {
   offers_detail_empty: 'Không có dữ liệu mở rộng',
   offers_detail_commission_eligible: 'Đủ điều kiện commission',
   offers_detail_affiliate_link_available: 'Có affiliate link',
-  offers_view_detail: 'View detail',
-  offers_detail_title: 'Offer Details',
-  offers_detail_campaign: 'Campaign',
-  offers_detail_promotions: 'Promotions',
-  offers_detail_policies: 'Commission Policies',
-  offers_detail_extra: 'Extra (raw)',
-  offers_detail_no_campaign: 'No linked campaign',
-  offers_detail_loading: 'Loading detail...',
-  offers_detail_empty: 'No extra data',
-  offers_detail_commission_eligible: 'Eligible for commission',
-  offers_detail_affiliate_link_available: 'Affiliate link available',
+    // Duplicate English keys removed
   ingest_policy_title: 'Chính sách Ingest',
   ingest_policy_only_with_commission: 'Chỉ sản phẩm có commission',
   ingest_policy_check_urls: 'Check URL (Excel import)',
@@ -321,8 +311,48 @@ export const messages = {
   metrics_info_inp: 'INP (Interaction to Next Paint): Good <200ms, Needs 200–500ms, Poor >500ms',
   metrics_info_hint: 'Di chuột vào chỉ số để xem tooltip ngưỡng.',
   metrics_info_button: 'Ngưỡng',
+  // Common / System new
+  common_loading: 'Đang tải...',
+  common_no_data: 'Không có dữ liệu',
+  common_reload_area: 'Thử tải lại khu vực',
+  common_reload_page: 'Tải lại trang',
+  // Error boundary
+  error_boundary_unexpected: 'Sự cố không mong muốn',
+  // Offline
+  offline_message: 'Mất kết nối mạng. Một số thao tác có thể không thành công.',
+  // Dashboard (added)
+  dashboard_title: 'Tổng quan',
+  dashboard_offers: 'Offers',
+  dashboard_campaigns: 'Campaigns',
+  dashboard_templates: 'Templates',
+  dashboard_links: 'Shortlinks',
+  dashboard_quick_nav: 'Đi nhanh',
+  dashboard_hint: 'Dùng menu hoặc các nút nhanh bên dưới để truy cập tính năng chính.',
+  // Getting Started Panel
+  getting_started_title: 'Bắt đầu nhanh',
+  getting_started_intro: 'Một vài bước gợi ý để cấu hình ban đầu:',
+  getting_started_api_config_title: 'Tạo API Config',
+  getting_started_api_config_desc: 'Thêm cấu hình endpoint + API key để tích hợp dịch vụ.',
+  getting_started_templates_title: 'Tạo Affiliate Templates',
+  getting_started_templates_desc: 'Định nghĩa mẫu chuyển đổi link cho công cụ Convert.',
+  getting_started_open: 'Mở',
+  action_dismiss: 'Ẩn',
+  action_retry: 'Thử lại',
+  not_found_desc: 'Đường dẫn không tồn tại hoặc đã bị thay đổi.',
+  // Not found
+  not_found_title: 'Không tìm thấy trang',
+  not_found_back_home: 'Về trang chính',
+  // AI Assistant
+  ai_intro: 'Hỏi nhanh để được gợi ý sản phẩm, mô tả bán hàng hoặc ý tưởng nội dung. Lịch sử chỉ lưu cục bộ trình duyệt.',
+  ai_empty: 'Chưa có câu hỏi. Hãy nhập câu đầu tiên ở trên.',
+  // Logs / ingest
+  logs_empty: 'Chưa có log.',
+  // Excel
+  excel_download_template: 'Tải Template',
+  excel_downloading_template: 'Đang tải...',
   },
   en: {
+    offline_message: 'Network offline. Some actions may fail.',
     nav_shortlinks: 'Shortlinks',
     nav_convert: 'Convert',
     nav_templates: 'Templates',
@@ -622,5 +652,42 @@ export const messages = {
   metrics_info_inp: 'INP (Interaction to Next Paint): Good <200ms, Needs 200–500ms, Poor >500ms',
   metrics_info_hint: 'Hover metric names for thresholds tooltip.',
   metrics_info_button: 'Thresholds',
+  // Common / System new
+  common_loading: 'Loading...',
+  common_no_data: 'No data',
+  common_reload_area: 'Reload section',
+  common_reload_page: 'Reload page',
+  // Error boundary
+  error_boundary_unexpected: 'Unexpected error',
+  // Offline
+  // offline_message duplicate removed (already declared earlier)
+  dashboard_title: 'Overview',
+  dashboard_offers: 'Offers',
+  dashboard_campaigns: 'Campaigns',
+  dashboard_templates: 'Templates',
+  dashboard_links: 'Shortlinks',
+  dashboard_quick_nav: 'Quick Navigation',
+  dashboard_hint: 'Use the menu or quick buttons below to reach primary features.',
+  getting_started_title: 'Getting Started',
+  getting_started_intro: 'Suggested initial setup steps:',
+  getting_started_api_config_title: 'Create API Config',
+  getting_started_api_config_desc: 'Add endpoint + API key configuration for integration.',
+  getting_started_templates_title: 'Create Affiliate Templates',
+  getting_started_templates_desc: 'Define link conversion templates for the Convert tool.',
+  getting_started_open: 'Open',
+  action_dismiss: 'Dismiss',
+  action_retry: 'Retry',
+  not_found_desc: 'The path does not exist or has changed.',
+  // Not found
+  not_found_title: 'Page not found',
+  not_found_back_home: 'Back to home',
+  // AI Assistant
+  ai_intro: 'Ask quickly for product suggestions, sales copy or content ideas. History stays local.',
+  ai_empty: 'No questions yet. Start by typing above.',
+  // Logs / ingest
+  logs_empty: 'No logs yet.',
+  // Excel
+  excel_download_template: 'Download Template',
+  excel_downloading_template: 'Loading...',
   }
 };

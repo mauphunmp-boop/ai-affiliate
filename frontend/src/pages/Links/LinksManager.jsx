@@ -1,5 +1,6 @@
 import React from 'react';
 import { Paper, Typography, Stack, Button, Dialog, DialogTitle, DialogContent, DialogActions, TextField, IconButton, Tooltip } from '@mui/material';
+import SkeletonSection from '../../components/SkeletonSection.jsx';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -22,11 +23,11 @@ export default function LinksManager() {
   const [selection, setSelection] = React.useState([]);
   const [confirm, setConfirm] = React.useState({ open:false, ids:[] });
 
-  const load = async () => {
+  const load = React.useCallback(async () => {
     setLoading(true);
     try { const res = await getLinks(); setRows(res.data||[]); } catch(e){ notify('error', e?.normalized?.message||'Error'); } finally { setLoading(false); }
-  };
-  React.useEffect(()=>{ load(); }, []);
+  }, [notify]);
+  React.useEffect(()=>{ load(); }, [load]);
 
   const openAdd = () => { setEditing(null); setForm({ name:'', url:'', affiliate_url:'' }); setDialogOpen(true); };
   const openEdit = (row) => { setEditing(row); setForm({ name:row.name, url:row.url, affiliate_url:row.affiliate_url }); setDialogOpen(true); };
@@ -34,9 +35,22 @@ export default function LinksManager() {
 
   const save = async () => {
     try {
-      if (!form.name || !form.url || !form.affiliate_url) { notify('warning', t('api_configs_form_required')); return; }
-      if (editing) { await updateLink(editing.id, form); notify('success', t('dlg_save')); }
-      else { await createLink(form); notify('success', t('dlg_create')); }
+      const { name, url, affiliate_url } = form;
+      if (!name.trim()) { notify('warning', t('api_configs_form_required')); return; }
+      if (!url && !affiliate_url) { notify('warning', 'Cần ít nhất một URL hoặc Affiliate URL'); return; }
+      const isValidUrl = (u) => {
+        if (!u) return true; // cho phép trống một trong hai
+        try { new URL(u); return true; } catch { return false; }
+      };
+      if (url && !isValidUrl(url)) { notify('warning', 'URL không hợp lệ'); return; }
+      if (affiliate_url && !isValidUrl(affiliate_url)) { notify('warning', 'Affiliate URL không hợp lệ'); return; }
+      const payload = {
+        name: name.trim(),
+        url: url || affiliate_url, // đảm bảo backend có đủ trường bắt buộc (schema yêu cầu cả 3 trong giai đoạn hiện tại)
+        affiliate_url: affiliate_url || url,
+      };
+      if (editing) { await updateLink(editing.id, payload); notify('success', t('dlg_save')); }
+      else { await createLink(payload); notify('success', t('dlg_create')); }
       closeDialog(); load();
     } catch(e){ notify('error', e?.normalized?.message||'Error'); }
   };
@@ -57,15 +71,16 @@ export default function LinksManager() {
     load();
   };
 
+  // DataTable mong đợi mỗi cột có: key, label, (tùy chọn) render(row)
   const columns = React.useMemo(()=>[
-    { field:'id', headerName:'ID', width:80 },
-    { field:'name', headerName:t('links_col_name'), width:200 },
-    { field:'url', headerName:'URL', width:260, renderCell:v => <a href={v} target="_blank" rel="noreferrer" style={{ overflow:'hidden', textOverflow:'ellipsis', display:'block', maxWidth:240 }}>{v}</a> },
-    { field:'affiliate_url', headerName:'Affiliate URL', width:300, renderCell:v => <a href={v} target="_blank" rel="noreferrer" style={{ overflow:'hidden', textOverflow:'ellipsis', display:'block', maxWidth:280 }}>{v}</a> },
-    { field:'actions', headerName:t('col_actions'), width:90, renderCell:(_,row)=>(
+    { key:'id', label:'ID', sortable:true },
+    { key:'name', label:t('links_col_name'), sortable:true },
+    { key:'url', label:'URL', render: r => r.url ? <a href={r.url} target="_blank" rel="noreferrer" style={{ overflow:'hidden', textOverflow:'ellipsis', display:'block', maxWidth:240 }}>{r.url}</a> : '' },
+    { key:'affiliate_url', label:'Affiliate URL', render: r => r.affiliate_url ? <a href={r.affiliate_url} target="_blank" rel="noreferrer" style={{ overflow:'hidden', textOverflow:'ellipsis', display:'block', maxWidth:280 }}>{r.affiliate_url}</a> : '' },
+    { key:'actions', label:t('col_actions'), render: r => (
       <>
-        <Tooltip title={t('tooltip_edit')}><IconButton size="small" onClick={()=>openEdit(row)}><EditIcon fontSize="inherit" /></IconButton></Tooltip>
-        <Tooltip title={t('tooltip_delete')}><IconButton size="small" color="error" onClick={()=>{ setConfirm({ open:true, ids:[row.id] }); }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
+        <Tooltip title={t('tooltip_edit')}><IconButton size="small" onClick={()=>openEdit(r)}><EditIcon fontSize="inherit" /></IconButton></Tooltip>
+        <Tooltip title={t('tooltip_delete')}><IconButton size="small" color="error" onClick={()=>{ setConfirm({ open:true, ids:[r.id] }); }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
       </>
     )},
   ], [t]);
@@ -85,6 +100,9 @@ export default function LinksManager() {
         <Button size="small" startIcon={<RefreshIcon/>} onClick={load} disabled={loading}>{t('action_refresh')}</Button>
       </Stack>
       {bulkBar}
+      {loading && rows.length===0 && (
+        <SkeletonSection variant="table" rows={6} />
+      )}
       <DataTable
         tableId="linksManager"
         rows={rows}
@@ -102,8 +120,8 @@ export default function LinksManager() {
         <DialogContent dividers>
           <Stack spacing={2} sx={{ mt:0.5 }}>
             <TextField size="small" label={t('links_field_name')} value={form.name} onChange={e=>setForm(f=>({...f, name:e.target.value}))} required />
-            <TextField size="small" label="URL" value={form.url} onChange={e=>setForm(f=>({...f, url:e.target.value}))} required />
-            <TextField size="small" label="Affiliate URL" value={form.affiliate_url} onChange={e=>setForm(f=>({...f, affiliate_url:e.target.value}))} required />
+            <TextField size="small" label="URL" value={form.url} onChange={e=>setForm(f=>({...f, url:e.target.value}))} helperText="Có thể để trống nếu đã nhập Affiliate URL" />
+            <TextField size="small" label="Affiliate URL" value={form.affiliate_url} onChange={e=>setForm(f=>({...f, affiliate_url:e.target.value}))} helperText="Có thể để trống nếu đã nhập URL" />
           </Stack>
         </DialogContent>
         <DialogActions>

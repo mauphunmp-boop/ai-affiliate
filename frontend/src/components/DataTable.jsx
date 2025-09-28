@@ -28,7 +28,7 @@ export default function DataTable({
   enableColumnHide = false,
   enablePagination = false,
   initialPageSize = 25,
-  pageSizes = [10, 25, 50, 100],
+  pageSizes = [10, 20, 25, 50, 100],
   onRefresh,
   emptyComponent,
   toolbarExtras, // React node đặt bên phải toolbar
@@ -69,7 +69,7 @@ export default function DataTable({
   }, [pageSize, storagePageSizeKey]);
 
   const mqlRef = React.useRef({});
-  const [, force] = React.useState(0);
+  const [, setForce] = React.useState(0); // internal rerender trigger for media query listeners
   const isBpHidden = (key) => {
     if (!responsiveHiddenBreakpoints || !responsiveHiddenBreakpoints[key]) return false;
     if (typeof window === 'undefined') return false;
@@ -81,7 +81,7 @@ export default function DataTable({
     if (!entry) {
       const m = window.matchMedia(q);
       entry = { m, matches: m.matches };
-      m.addEventListener('change', e => { entry.matches = e.matches; force(v=>v+1); });
+  m.addEventListener('change', e => { entry.matches = e.matches; setForce(v=>v+1); });
       mqlRef.current[q] = entry;
     }
     return entry.matches;
@@ -90,12 +90,12 @@ export default function DataTable({
   const allSelectableIds = React.useMemo(() => enableSelection ? rows.map(r => r[selectionKey]).filter(v => v != null) : [], [rows, selectionKey, enableSelection]);
   const isAllSelected = enableSelection && allSelectableIds.length > 0 && selection.length === allSelectableIds.length;
   const toggleSelectAll = () => {
-    setSelection(s => isAllSelected ? [] : [...allSelectableIds]);
+    setSelection(() => isAllSelected ? [] : [...allSelectableIds]);
   };
   const toggleRow = (row) => {
     const id = row[selectionKey];
     if (id == null) return;
-    setSelection(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  setSelection(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
   const toggleHide = (key) => {
@@ -104,9 +104,9 @@ export default function DataTable({
 
   const handleSort = (col) => {
     if (!col.sortable) return;
-    setSort(s => {
-      if (!s || s.key !== col.key) return { key: col.key, direction: 'asc' };
-      if (s.direction === 'asc') return { key: col.key, direction: 'desc' };
+    setSort(prev => {
+      if (!prev || prev.key !== col.key) return { key: col.key, direction: 'asc' };
+      if (prev.direction === 'asc') return { key: col.key, direction: 'desc' };
       return null; // remove sort
     });
   };
@@ -154,7 +154,15 @@ export default function DataTable({
   React.useEffect(() => { if (onSelectionChange) onSelectionChange(selection); }, [selection, onSelectionChange]);
   React.useEffect(() => { if (onState) onState({ processed, visibleColumns, filter, sort, page, pageSize, selection }); }, [processed, visibleColumns, filter, sort, page, pageSize, selection, onState]);
 
-  const { t } = useT ? useT() : { t:(k)=>k };
+  // useT is always defined (imported), call unconditionally to satisfy React Hooks rules
+  const { t } = useT();
+  const tKey = React.useCallback((key, fallback, params) => {
+    try {
+      const val = t(key, params);
+      if (!val || val === key) return fallback;
+      return val;
+    } catch { return fallback; }
+  }, [t]);
   const liveRef = React.useRef(null);
 
   // Announce pagination & filter changes for screen readers
@@ -172,11 +180,16 @@ export default function DataTable({
       liveRef.current.textContent = t('table_a11y_filter_applied', { count: total });
     }
   }, [filter, total, enableQuickFilter, t]);
-  const isNarrow = useMediaQuery(theme => {
-    if (!responsiveCards) return false;
-    if (typeof cardBreakpoint === 'string') return theme.breakpoints.down(cardBreakpoint);
-    return `(max-width:${cardBreakpoint}px)`; // fallback manual string
-  });
+  // Build media query string deterministically then call hook once (avoid conditional hook calls)
+  const cardQuery = React.useMemo(() => {
+    if (!responsiveCards) return null;
+    const map = { xs:0, sm:600, md:900, lg:1200, xl:1536 };
+    if (typeof cardBreakpoint === 'string' && map[cardBreakpoint] != null) return `(max-width:${map[cardBreakpoint]}px)`;
+    if (typeof cardBreakpoint === 'number') return `(max-width:${cardBreakpoint}px)`;
+    if (typeof cardBreakpoint === 'string') return cardBreakpoint; // raw query string
+    return null;
+  }, [responsiveCards, cardBreakpoint]);
+  const isNarrow = useMediaQuery(cardQuery || '(max-width:0px)') && !!cardQuery;
   const useCards = !!responsiveCards && isNarrow;
 
   const renderSkeletonTable = () => (
@@ -260,14 +273,20 @@ export default function DataTable({
   };
 
   return (
-    <Paper sx={{ position: 'relative', overflow: 'hidden', ...paperProps.sx }} {...paperProps}>
+  <Paper data-testid="datatable" sx={{ position: 'relative', overflow: 'hidden', ...paperProps.sx }} {...paperProps}>
       {/* aria-live region for announcements */}
       <Box sx={{ position:'absolute', width:1, height:1, overflow:'hidden', clip:'rect(1px,1px,1px,1px)', whiteSpace:'nowrap' }} aria-live="polite" aria-atomic="true" ref={liveRef} />
       { (enableQuickFilter || enableColumnHide || onRefresh || toolbarExtras) && (
         <Box sx={{ p:1.5, pb:1, display:'flex', gap:1, alignItems:'center', flexWrap:'wrap' }}>
           {enableQuickFilter && (
-            <TextField size="small" placeholder={t('table_quick_filter_placeholder')} value={filter} onChange={e=>setFilter(e.target.value)}
-              InputProps={{ startAdornment:<InputAdornment position="start"><SearchIcon fontSize="small"/></InputAdornment> }} sx={{ minWidth:200 }} />
+            <TextField
+              size="small"
+              placeholder={tKey('table_quick_filter_placeholder','Lọc nhanh...')}
+              value={filter}
+              onChange={e=>setFilter(e.target.value)}
+              InputProps={{ startAdornment:<InputAdornment position="start"><SearchIcon fontSize="small"/></InputAdornment> }}
+              sx={{ minWidth:200 }}
+            />
           )}
           {onRefresh && (
             <Tooltip title={t('table_refresh')}><span><IconButton aria-label="refresh" size="small" disabled={loading} onClick={onRefresh}><RefreshIcon fontSize="inherit" /></IconButton></span></Tooltip>
@@ -320,7 +339,12 @@ export default function DataTable({
                     <TableRow key={r.id || r.key || JSON.stringify(r)} hover selected={selected} sx={(dense || (typeof window !== 'undefined' && window.innerWidth < 600)) ? { '& td': { py: 0.6 } } : undefined}>
                       {enableSelection && (
                         <TableCell padding="checkbox">
-                          <Checkbox size="small" checked={selected} onChange={() => toggleRow(r)} inputProps={{ 'aria-label': `Chọn dòng ${rowId}${r.platform ? ' ' + r.platform : ''}` }} />
+                          <Checkbox
+                            size="small"
+                            checked={selected}
+                            onChange={() => toggleRow(r)}
+                            inputProps={{ 'aria-label': `select row ${rowId}${r.platform ? ' ' + r.platform : ''}` }}
+                          />
                         </TableCell>
                       )}
                       {visibleColumns.map(c => (
@@ -352,9 +376,9 @@ export default function DataTable({
         <Box sx={{ display:'flex', alignItems:'center', gap:2, px:1.5, py:1, borderTop: theme=>`1px solid ${theme.palette.divider}`, flexWrap:'wrap' }}>
           <Typography variant="caption">{t('table_total', { total })}{total !== originalTotal ? t('table_filtered_from', { original: originalTotal }) : ''}</Typography>
           <Stack direction="row" spacing={1} alignItems="center">
-            <Button size="small" disabled={page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>{t('table_prev')}</Button>
-            <Typography variant="caption">{t('table_page_of', { page: page+1, pages: pageCount||1 })}</Typography>
-            <Button size="small" disabled={page>=pageCount-1} onClick={()=>setPage(p=>Math.min(pageCount-1,p+1))}>{t('table_next')}</Button>
+            <Button size="small" disabled={page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>{tKey('table_prev','Trước')}</Button>
+            <Typography variant="caption">{tKey('table_page_of',`Trang ${page+1}/${pageCount||1}`, { page: page+1, pages: pageCount||1 })}</Typography>
+            <Button size="small" disabled={page>=pageCount-1} onClick={()=>setPage(p=>Math.min(pageCount-1,p+1))}>{tKey('table_next','Sau')}</Button>
           </Stack>
           <FormControl size="small" sx={{ minWidth:90 }}>
             <Select value={pageSize} onChange={e=>setPageSize(Number(e.target.value))}>
@@ -366,9 +390,9 @@ export default function DataTable({
           {sort && <Tooltip title={t('table_clear_sort')}><Button size="small" onClick={()=>setSort(null)}>{t('table_reset_sort')}</Button></Tooltip>}
         </Box>
       )}
-      <Menu open={!!anchor} onClose={()=>setAnchor(null)} anchorEl={anchor} keepMounted>
+  <Menu open={!!anchor} onClose={()=>setAnchor(null)} anchorEl={anchor}>
         {columns.map(c => (
-          <MenuItem key={c.key} dense onClick={()=>toggleHide(c.key)}>
+          <MenuItem key={c.key} dense onClick={()=>{ toggleHide(c.key); setAnchor(null); }}>
             <Checkbox size="small" checked={!hidden.includes(c.key)} />
             <ListItemText primaryTypographyProps={{ variant:'body2' }}>{c.label}</ListItemText>
           </MenuItem>

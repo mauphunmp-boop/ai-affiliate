@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Typography, Paper, Button, Alert, Chip, Box, Stack, Grid, Divider } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import api from '../../../api';
+import api from '../../api.js';
 import { useT } from '../../i18n/I18nProvider.jsx';
 
 export default function HealthPage() {

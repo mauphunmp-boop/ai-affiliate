@@ -36,8 +36,8 @@ export default function ShortlinksPage() {
       if (order) params.order = order;
       const res = await api.get('/aff/shortlinks', { params });
       setRows(res.data || []);
-    } catch (e) {
-      console.error('Lỗi tải shortlinks', e);
+    } catch (err) {
+      console.error('Lỗi tải shortlinks', err);
     } finally {
       setLoading(false);
     }
@@ -55,7 +55,6 @@ export default function ShortlinksPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, minClicks, order]);
 
-  const copy = (text) => { navigator.clipboard.writeText(text).catch(() => {}); } // giữ nếu cần
 
   const [confirm, setConfirm] = useState({ open:false, token:null });
   const doDelete = async () => {
@@ -64,7 +63,7 @@ export default function ShortlinksPage() {
       await api.delete(`/aff/shortlinks/${token}`);
       setRows(r => r.filter(x => x.token !== token));
       notify('success', t('shortlinks_deleted'));
-    } catch (e) {
+    } catch {
       notify('error', t('shortlinks_delete_failed'));
     } finally { setConfirm({ open:false, token:null }); }
   };

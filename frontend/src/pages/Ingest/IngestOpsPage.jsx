@@ -15,7 +15,7 @@ import {
   setIngestPolicy,
   setCheckUrlsPolicy,
   ingestPresetTiktok
-} from '../../../api/ingest';
+} from '../../api/ingest.js';
 
 // Simple helper to format JSON safely
 const fmt = (v) => {

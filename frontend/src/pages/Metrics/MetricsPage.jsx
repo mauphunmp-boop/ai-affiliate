@@ -40,26 +40,16 @@ export default function MetricsPage() {
       params.set('limit', '200');
       const res = await api.get('/metrics/web-vitals?' + params.toString());
       setRows(res.data || []);
-    } catch (e) {
+    } catch {
       // silent: notifications handled globally for network/server
     } finally { setLoading(false); }
   }, [nameFilter, ratingFilter, urlFilter]);
-
-  React.useEffect(() => { fetchData(); }, [fetchData, refreshTick]);
-  React.useEffect(() => { fetchSummary(); }, [windowMinutes, refreshTick]);
-  React.useEffect(() => { if (showTrends) fetchTrends(); }, [showTrends, windowMinutes, trendBuckets, nameFilter, refreshTick]);
-
-  React.useEffect(() => {
-    if (!auto) return;
-    const id = setInterval(() => { setRefreshTick(x=>x+1); }, 15000); // 15s
-    return () => clearInterval(id);
-  }, [auto]);
 
   const fetchSummary = React.useCallback(async () => {
     try {
       const res = await api.get(`/metrics/web-vitals/summary?window_minutes=${windowMinutes}`);
       setSummary(res.data);
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
   }, [windowMinutes]);
 
   const fetchTrends = React.useCallback(async () => {
@@ -72,9 +62,19 @@ export default function MetricsPage() {
       if (nameFilter.trim()) params.set('names', nameFilter.trim());
       const res = await api.get('/metrics/web-vitals/trends?' + params.toString());
       setTrendData(res.data);
-    } catch (e) { /* silent */ }
+    } catch { /* silent */ }
     finally { setTrendLoading(false); }
   }, [showTrends, windowMinutes, trendBuckets, nameFilter]);
+
+  React.useEffect(() => { fetchData(); }, [fetchData, refreshTick]);
+  React.useEffect(() => { fetchSummary(); }, [fetchSummary, refreshTick]);
+  React.useEffect(() => { fetchTrends(); }, [fetchTrends, refreshTick]);
+
+  React.useEffect(() => {
+    if (!auto) return;
+    const id = setInterval(() => { setRefreshTick(x=>x+1); }, 15000); // 15s
+    return () => clearInterval(id);
+  }, [auto]);
 
   const exportCSV = () => {
     if (!rows.length) return;
@@ -286,7 +286,7 @@ function TrendChartRow({ name, points }) {
     if (!ref.current) return;
     const canvas = ref.current;
     const ctx = canvas.getContext('2d');
-    const w = canvas.width = canvas.clientWidth * (window.devicePixelRatio||1);
+  canvas.width = canvas.clientWidth * (window.devicePixelRatio||1);
     const h = canvas.height = 60 * (window.devicePixelRatio||1);
     ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1);
     ctx.clearRect(0,0,canvas.width,canvas.height);

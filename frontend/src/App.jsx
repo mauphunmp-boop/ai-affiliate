@@ -22,8 +22,8 @@ import api from "./api";
 import { useNotify } from './components/NotificationProvider.jsx';
 import { useT } from './i18n/I18nProvider.jsx';
 import ConfirmDialog from './components/ConfirmDialog.jsx';
-import Suggest from "./Suggest";
-import OfferList from "./OfferList";
+import Suggest from "./Suggest.jsx";
+import OfferList from "./components/OfferList.jsx";
 
 export default function App() {
   const notify = useNotify();
@@ -140,10 +140,10 @@ export default function App() {
                   </a>
                 </TableCell>
                 <TableCell>
-                  <IconButton onClick={() => handleOpen(link)} color="primary">
+                  <IconButton aria-label="edit link" onClick={() => handleOpen(link)} color="primary">
                     <Edit />
                   </IconButton>
-                  <IconButton onClick={() => handleDelete(link.id)} color="error"><Delete /></IconButton>
+                  <IconButton aria-label="delete link" onClick={() => handleDelete(link.id)} color="error"><Delete /></IconButton>
                 </TableCell>
               </TableRow>
             ))}

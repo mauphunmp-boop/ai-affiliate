@@ -1,12 +1,40 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Affiliate Manager</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#1976d2" />
+    <meta name="description" content="AI Affiliate Dashboard – Quản lý links, offers, shortlinks, ingest và metrics." />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/vite.svg" />
+    <title>AI Affiliate Dashboard</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <!-- PWA service worker: only register in production. In dev we unregister to avoid Vite module cache conflicts -->
+    <script type="module">
+      if ('serviceWorker' in navigator) {
+        if (import.meta.env.PROD) {
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/sw.js').catch(()=>{});
+          });
+        } else {
+          // DEV: unregister any existing SW + clear vite/app caches to prevent stale optimized dep 504 errors
+            navigator.serviceWorker.getRegistrations().then(regs => {
+              for (const r of regs) { r.unregister(); }
+            });
+            if (window.caches?.keys) {
+              caches.keys().then(keys => {
+                keys.filter(k => /^(vite-|workbox|sw-|.*app.*cache)/i.test(k)).forEach(k => caches.delete(k));
+              });
+            }
+            console.info('[DEV] Unregistered service workers & cleared caches');
+        }
+      }
+    </script>
   </body>
 </html>
+docker compose stop frontend
+docker compose up -d frontend

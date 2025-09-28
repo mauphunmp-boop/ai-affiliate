@@ -3,7 +3,6 @@ import { Typography, Paper, TextField, Box, Button, IconButton, MenuItem, Toolti
 import GlossaryTerm from '../../components/GlossaryTerm.jsx';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ContentPasteGoIcon from '@mui/icons-material/ContentPasteGo';
 import CopyButton from '../../components/CopyButton.jsx';
 import usePersistedState from '../../hooks/usePersistedState.js';
@@ -14,6 +13,7 @@ const KNOWN_PLATFORMS = ['shopee','lazada','tiki','tiktok','sendo'];
 export default function ConvertTool() {
   const [url, setUrl] = usePersistedState('convert_url', '');
   const [platform, setPlatform] = usePersistedState('convert_platform', '');
+  const manualPlatformRef = useRef(false); // đánh dấu user tự chọn để không override ngoài ý muốn
   const [params, setParams] = usePersistedState('convert_params', [{ k: 'sub1', v: '' }]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -26,20 +26,19 @@ export default function ConvertTool() {
   const removeParam = (i) => setParams(p => p.filter((_, idx) => idx !== i));
   const reset = () => { setUrl(''); setPlatform(''); setParams([{ k:'sub1', v:'' }]); setResult(null); setError(''); };
 
-  // Auto detect platform khi URL đổi & platform trống
+  // Auto detect platform khi URL đổi: nếu tìm thấy & (platform đang rỗng hoặc platform khác nhưng chưa bị user override thủ công) thì cập nhật
   useEffect(() => {
-    if (!url || platform) return;
-    try {
-      const u = new URL(url);
-      const host = u.hostname.toLowerCase();
-      const found = KNOWN_PLATFORMS.find(p => host.includes(p));
-      if (found) setPlatform(found);
-    } catch {}
-  }, [url, platform]);
+    if (!url) return;
+    const lower = url.toLowerCase();
+    const found = KNOWN_PLATFORMS.find(p => lower.includes('//' + p + '.') || lower.includes(p + '.vn'));
+    if (found && (!manualPlatformRef.current) && platform !== found) {
+      setPlatform(found);
+      manualPlatformRef.current = false; // auto detect reset
+    }
+  }, [url, platform, setPlatform]);
 
   // Persist state handled by usePersistedState hook
 
-  const copy = (text) => navigator.clipboard.writeText(text).catch(()=>{});
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -87,16 +86,16 @@ export default function ConvertTool() {
     <Paper sx={{ p:2 }}>
       <Typography variant="h5" gutterBottom>Convert Link Affiliate</Typography>
       <Typography variant="body2" sx={{ mb:2 }}>
-        Nhập URL gốc và (tùy chọn) <GlossaryTerm term="platform">platform</GlossaryTerm> để tạo affiliate_url + <GlossaryTerm term="shortlink">shortlink</GlossaryTerm> (/r/{{token}}). Bạn có thể thêm tham số tracking.
+        Nhập URL gốc và (tùy chọn) <GlossaryTerm term="platform">platform</GlossaryTerm> để tạo affiliate_url + <GlossaryTerm term="shortlink">shortlink</GlossaryTerm> (/r/&#123;&#123;token&#125;&#125;). Bạn có thể thêm tham số tracking.
       </Typography>
       <Box component="form" onSubmit={onSubmit} sx={{ display:'flex', flexDirection:'column', gap:2 }}>
         <Box sx={{ display:'flex', gap:1, alignItems:'flex-start' }}>
           <TextField label="URL gốc" value={url} onChange={e=>setUrl(e.target.value)} required fullWidth />
-          <Tooltip title="Dán từ clipboard và auto detect"><span><IconButton onClick={pasteAndDetect}><ContentPasteGoIcon /></IconButton></span></Tooltip>
+          <Tooltip title="Dán từ clipboard và auto detect"><span><IconButton aria-label="paste url from clipboard" onClick={pasteAndDetect}><ContentPasteGoIcon /></IconButton></span></Tooltip>
         </Box>
-        <TextField label="Platform" select value={platform} onChange={e=>setPlatform(e.target.value)} helperText="Có thể bỏ trống để dùng template mặc định network nếu có" FormHelperTextProps={{ sx: platformFlash ? { animation:'pulse 1.2s ease-in-out' } : undefined }} sx={platformFlash ? { borderRadius:1, animation:'pulse-bg 1.2s' } : undefined}>
-          <MenuItem value=""><em>(Không chỉ định)</em></MenuItem>
-          {KNOWN_PLATFORMS.map(p => <MenuItem key={p} value={p}>{p}</MenuItem>)}
+        <TextField label="Platform" select SelectProps={{ native:true }} value={platform} onChange={e=>{ manualPlatformRef.current = true; setPlatform(e.target.value); }} helperText="Có thể bỏ trống để dùng template mặc định network nếu có" FormHelperTextProps={{ sx: platformFlash ? { animation:'pulse 1.2s ease-in-out' } : undefined }} sx={platformFlash ? { borderRadius:1, animation:'pulse-bg 1.2s' } : undefined}>
+          <option value="">(Không chỉ định)</option>
+          {KNOWN_PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
         </TextField>
         <Box>
           <Box sx={{ display:'flex', alignItems:'center', mb:1, gap:1 }}>

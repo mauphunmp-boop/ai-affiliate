@@ -1,12 +1,14 @@
-import React, { createContext, useCallback, useContext, useState } from 'react';
+import React, { createContext, useCallback, useContext, useState, useRef } from 'react';
 import { Snackbar, Alert } from '@mui/material';
 
 const NotificationContext = createContext({ enqueue: () => {} });
 
-export function NotificationProvider({ children, autoHideDuration = 4200, maxQueue = 6 }) {
+export function NotificationProvider({ children, autoHideDuration = 4200, maxQueue = 6, collapseNetworkErrorsMs = 2500, shiftDelay = 10, testImmediate = false }) {
   const [queue, setQueue] = useState([]); // pending items
   const [current, setCurrent] = useState(null);
-  const [lastMessages, setLastMessages] = useState([]); // để dedupe gần đây
+  // removed lastMessages state (only ref used for dedupe)
+  const [, setLastMessages] = useState([]); // giữ set cho debug có thể bật lại nếu cần
+  const lastMessagesRef = useRef([]); // ref đồng bộ cho dedupe trong nhiều enqueue cùng tick
 
   const shift = useCallback(() => {
     setCurrent(null);
@@ -26,6 +28,10 @@ export function NotificationProvider({ children, autoHideDuration = 4200, maxQue
     }
   }, [current, queue]);
 
+  const lastEnqueueRef = useRef({ msg:'', time:0 });
+  // keep collapse window in ref so enqueue stable without extra deps
+  const collapseMsRef = useRef(collapseNetworkErrorsMs);
+  collapseMsRef.current = collapseNetworkErrorsMs;
   const enqueue = useCallback((typeOrObj, maybeMessage) => {
     let item;
     if (typeof typeOrObj === 'object' && typeOrObj !== null) {
@@ -34,18 +40,25 @@ export function NotificationProvider({ children, autoHideDuration = 4200, maxQue
       item = { type: typeOrObj || 'info', message: maybeMessage || '' };
     }
     if (!item.message) return;
+    const now = Date.now();
+    // Collapse network errors: nếu cùng message và trong khoảng collapseNetworkErrorsMs bỏ qua
+    if (item.type === 'error' && lastEnqueueRef.current.msg === item.message && (now - lastEnqueueRef.current.time) < collapseMsRef.current) {
+      return;
+    }
+    lastEnqueueRef.current = { msg:item.message, time:now };
     // Dedupe: nếu message đã xuất hiện 2 lần gần nhất thì bỏ qua
-    setLastMessages(prev => {
-      const next = [...prev, item.message].slice(-4);
-      return next;
-    });
-    const shouldSkip = lastMessages.slice(-2).includes(item.message);
+    // Dedupe đồng bộ: kiểm tra 2 message trước trong ref (không tính message hiện tại)
+    const recent = lastMessagesRef.current;
+    const shouldSkip = recent.slice(-2).includes(item.message);
     if (shouldSkip) return;
+    // Ghi nhận message vào ref và state (state chỉ dùng cho debug nếu cần)
+    lastMessagesRef.current = [...recent, item.message].slice(-4);
+    setLastMessages(lastMessagesRef.current);
     setQueue(q => {
       const next = [...q, { id: Date.now() + Math.random(), ...item }];
       return next.slice(-maxQueue);
     });
-  }, [lastMessages, maxQueue]);
+  }, [maxQueue]);
 
   return (
     <NotificationContext.Provider value={{ enqueue }}>
@@ -54,9 +67,18 @@ export function NotificationProvider({ children, autoHideDuration = 4200, maxQue
         open={!!current}
         key={current?.id}
         autoHideDuration={autoHideDuration}
-        onClose={(_, r) => { if (r === 'clickaway') return; setCurrent(null); }}
-        onExited={shift}
+        onClose={(_, r) => {
+          if (r === 'clickaway') return;
+            setCurrent(null);
+            if (testImmediate) {
+              shift();
+            } else {
+              setTimeout(shift, shiftDelay);
+            }
+        }}
+        // MUI v6 đôi khi không chuyển prop onExited trong môi trường test → dùng fallback timeout ở onClose
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        data-current-message={current?.message || ''}
       >
         <Alert
           variant="filled"
@@ -74,3 +96,6 @@ export function NotificationProvider({ children, autoHideDuration = 4200, maxQue
 export function useNotify() {
   return useContext(NotificationContext).enqueue;
 }
+
+// default export để tương thích import mặc định trong test cũ
+export default NotificationProvider;

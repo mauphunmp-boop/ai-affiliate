@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Paper, Typography, Stack, Button, Select, MenuItem, TextField, Chip, Tooltip } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import api from '../../../api';
+import api from '../../api.js';
 import { useT } from '../../i18n/I18nProvider.jsx';
 
 export default function LogsViewerPage(){
@@ -14,7 +14,7 @@ export default function LogsViewerPage(){
   const [auto, setAuto] = React.useState(false);
   const [filter, setFilter] = React.useState('');
 
-  const loadFiles = async () => {
+  const loadFiles = React.useCallback(async () => {
     try {
       const r = await api.get('/system/logs');
       if (r.data?.files) {
@@ -22,18 +22,18 @@ export default function LogsViewerPage(){
         if (!file && r.data.files.length) setFile(r.data.files[0].filename);
       }
     } catch {}
-  };
-  const loadLines = async () => {
+  }, [file]);
+  const loadLines = React.useCallback( async () => {
     if (!file) return;
     setLoading(true);
     try {
       const r = await api.get(`/system/logs/${encodeURIComponent(file)}?n=${limit}`);
       setLines(r.data?.lines||[]);
     } catch { /* silent */ } finally { setLoading(false); }
-  };
-  React.useEffect(()=>{ loadFiles(); }, []);
-  React.useEffect(()=>{ loadLines(); }, [file, limit]);
-  React.useEffect(()=>{ if(!auto) return; const id=setInterval(()=>loadLines(), 8000); return ()=>clearInterval(id); }, [auto, file, limit]);
+  }, [file, limit]);
+  React.useEffect(()=>{ loadFiles(); }, [loadFiles]);
+  React.useEffect(()=>{ loadLines(); }, [loadLines]);
+  React.useEffect(()=>{ if(!auto) return; const id=setInterval(()=>loadLines(), 8000); return ()=>clearInterval(id); }, [auto, loadLines]);
 
   const filtered = React.useMemo(()=>{
     if(!filter.trim()) return lines;

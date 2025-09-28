@@ -1,6 +1,8 @@
 import React from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
-import { Box, Drawer, Toolbar, AppBar, Typography, List, ListItem, ListItemButton, ListItemText, IconButton, Tooltip, useMediaQuery, Divider, Select, MenuItem } from '@mui/material';
+// Consolidated MUI imports (removed duplicated import block that caused identifier redeclarations)
+import { AppBar, Toolbar, Typography, IconButton, Box, Drawer, List, ListItem, ListItemButton, ListItemText, useMediaQuery, Tooltip, Divider, Select, MenuItem } from '@mui/material';
+import GettingStartedPanel from '../components/GettingStartedPanel.jsx';
 import MenuIcon from '@mui/icons-material/Menu';
 import DarkModeIcon from '@mui/icons-material/DarkMode';
 import LightModeIcon from '@mui/icons-material/LightMode';
@@ -31,7 +33,7 @@ const baseNav = [
 export default function AppLayout() {
   const { dark, mode, cycle } = useColorMode();
   const { t, lang, setLang } = useT();
-  const navItems = React.useMemo(()=> baseNav.map(n => ({ ...n, label: t(n.labelKey) })), [t, lang]);
+    const navItems = React.useMemo(()=> baseNav.map(n => ({ ...n, label: t(n.labelKey) })), [t]);
   const isMobile = useMediaQuery(theme => theme.breakpoints.down('sm'));
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const toggleDrawer = () => setMobileOpen(o=>!o);
@@ -95,7 +97,8 @@ export default function AppLayout() {
       )}
       <Box component="main" id="main-content" sx={{ flexGrow: 1, p: { xs:2, sm:3 } }}>
         <Toolbar />
-        <OnboardingTip />
+          <GettingStartedPanel />
+          <OnboardingTip />
         <RouteFocusWrapper>
           <Outlet />
         </RouteFocusWrapper>

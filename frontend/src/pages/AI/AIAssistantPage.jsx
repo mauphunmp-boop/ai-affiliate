@@ -52,7 +52,6 @@ export default function AIAssistantPage() {
     }
   };
 
-  const copy = (text) => navigator.clipboard.writeText(text).catch(()=>{}); // sẽ bỏ sau khi thay toàn bộ bằng CopyButton
   const [confirm, setConfirm] = useState(false);
   const clearAll = () => setConfirm(true);
   const doClear = () => { setHistory([]); setConfirm(false); };

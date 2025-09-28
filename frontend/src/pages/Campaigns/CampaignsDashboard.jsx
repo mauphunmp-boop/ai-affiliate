@@ -1,5 +1,6 @@
 import React from 'react';
-import { Paper, Typography, Stack, Button, Tabs, Tab, Box, Chip, TextField, IconButton, Tooltip, Drawer, Divider, CircularProgress, List, ListItem, ListItemText } from '@mui/material';
+import { Paper, Typography, Stack, Button, Tabs, Tab, Box, Chip, TextField, IconButton, Tooltip, Collapse } from '@mui/material';
+import SkeletonSection from '../../components/SkeletonSection.jsx';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -7,24 +8,20 @@ import DataTable from '../../components/DataTable.jsx';
 import { useNotify } from '../../components/NotificationProvider.jsx';
 import { useT } from '../../i18n/I18nProvider.jsx';
 import api from '../../api.js';
-
-function useAsync(fn, deps) {
-  const [state, set] = React.useState({ loading:false, data:null, error:null });
-  const run = React.useCallback(async (...a) => {
-    set(s=>({ ...s, loading:true, error:null }));
-    try { const data = await fn(...a); set({ loading:false, data, error:null }); return data; } catch (e) { set({ loading:false, data:null, error:e }); throw e; }
-  }, deps);
-  return [state, run];
-}
+import useApiCache from '../../hooks/useApiCache.js';
+import { useRoutePerf } from '../../hooks/useRoutePerf.js';
+const CampaignExtrasDrawerLazy = React.lazy(()=>import('../../components/CampaignExtrasDrawer.jsx'));
 
 export default function CampaignsDashboard() {
   const { t } = useT();
+  useRoutePerf('CampaignsDashboard');
   const notify = useNotify();
   const [tab, setTab] = React.useState(0);
-  const [summary, setSummary] = React.useState(null);
+  const { data: summary, loading: loadingSummary, refresh: refreshSummary } = useApiCache('campaigns_summary', async () => {
+    const r = await api.get('/campaigns/summary');
+    return r.data;
+  }, { ttlMs:60000 });
   const [alerts, setAlerts] = React.useState([]);
-  const [campaignRows, setCampaignRows] = React.useState([]);
-  const [loadingCampaigns, setLoadingCampaigns] = React.useState(false);
   const [filters, setFilters] = React.useState({ status:'', user_status:'', merchant:'' });
   const [backfillLimit, setBackfillLimit] = React.useState('200');
   const [backfilling, setBackfilling] = React.useState(false);
@@ -34,37 +31,38 @@ export default function CampaignsDashboard() {
 
   const openExtras = async (cid) => {
     setDrawerOpen(true); setExtras(null); setExtrasLoading(true);
-    try {
-      const r = await api.get(`/campaigns/${encodeURIComponent(cid)}/extras`);
-      setExtras(r.data);
-    } catch (e) { setExtras({ error: e?.normalized?.message || e.message }); }
+    try { const r = await api.get(`/campaigns/${encodeURIComponent(cid)}/extras`); setExtras(r.data); }
+    catch (e) { setExtras({ error: e?.normalized?.message || e.message }); }
     finally { setExtrasLoading(false); }
   };
 
-  const loadSummary = async () => {
-    try { const r = await api.get('/campaigns/summary'); setSummary(r.data); } catch(e) { notify('error', e?.normalized?.message||e.message); }
-  };
+  const loadSummary = async () => { try { await refreshSummary(); } catch(e) { notify('error', e?.normalized?.message||e.message); } };
   const loadAlerts = async () => {
-    try { const r = await api.get('/alerts/campaigns-registration'); setAlerts(r.data||[]); } catch(e) { /* ignore */ }
+    try { const r = await api.get('/alerts/campaigns-registration'); setAlerts(r.data||[]); } catch { /* noop */ }
   };
-  const loadCampaigns = async () => {
-    setLoadingCampaigns(true);
-    try {
-      const params = new URLSearchParams();
-      if (filters.status) params.append('status', filters.status);
-      if (filters.user_status) params.append('user_status', filters.user_status);
-      if (filters.merchant) params.append('merchant', filters.merchant);
-      const r = await api.get('/campaigns' + (params.toString()?`?${params.toString()}`:''));
-      setCampaignRows(r.data||[]);
-    } catch(e) { notify('error', e?.normalized?.message||e.message); } finally { setLoadingCampaigns(false); }
-  };
+  const campaignsKey = `campaigns_${filters.status}_${filters.user_status}_${filters.merchant}`;
+  const { data: campaignsData, loading: campaignsLoading, refresh: refreshCampaigns } = useApiCache(campaignsKey, async () => {
+    const params = new URLSearchParams();
+    if (filters.status) params.append('status', filters.status);
+    if (filters.user_status) params.append('user_status', filters.user_status);
+    if (filters.merchant) params.append('merchant', filters.merchant);
+    const r = await api.get('/campaigns' + (params.toString()?`?${params.toString()}`:''));
+    return r.data||[];
+  }, { ttlMs:30000, refreshDeps:[filters.status, filters.user_status, filters.merchant] });
+  const loadCampaigns = React.useCallback(async () => { try { await refreshCampaigns(); } catch(e){ notify('error', e?.normalized?.message||e.message); } }, [refreshCampaigns, notify]);
 
-  React.useEffect(()=>{ loadSummary(); loadAlerts(); loadCampaigns(); }, []);
+  React.useEffect(()=>{ loadAlerts(); loadCampaigns(); }, [loadCampaigns]);
 
   const backfill = async () => {
     setBackfilling(true);
-    try { const r = await api.post(`/campaigns/backfill-user-status?limit=${encodeURIComponent(backfillLimit||'200')}`); notify('success', t('campaigns_backfill_done', { fixed: r.data?.fixed||0 })); loadSummary(); loadCampaigns(); }
-    catch(e){ notify('error', e?.normalized?.message||e.message); } finally { setBackfilling(false); }
+    try {
+      const r = await api.post(`/campaigns/backfill-user-status?limit=${encodeURIComponent(backfillLimit||'200')}`);
+      notify('success', t('campaigns_backfill_done', { fixed: r.data?.fixed||0 }));
+      loadSummary();
+      loadCampaigns();
+    }
+    catch(err){ notify('error', err?.normalized?.message||err.message); }
+    finally { setBackfilling(false); }
   };
 
   const columnsAlerts = React.useMemo(()=>[
@@ -97,33 +95,58 @@ export default function CampaignsDashboard() {
           <IconButton size="small" component="a" href={`/api/campaigns/${encodeURIComponent(row.campaign_id)}/description`} target="_blank" rel="noopener noreferrer"><OpenInNewIcon fontSize="inherit" /></IconButton>
         </Tooltip>
         <Tooltip title={t('campaigns_view_extras')}>
-          <IconButton size="small" onClick={()=>openExtras(row.campaign_id)}><PlayArrowIcon fontSize="inherit" /></IconButton>
+          <IconButton
+            size="small"
+            onClick={()=>openExtras(row.campaign_id)}
+            onMouseEnter={()=>{ // prefetch extras nhẹ
+              api.get(`/campaigns/${encodeURIComponent(row.campaign_id)}/extras`).catch(()=>{});
+            }}
+          ><PlayArrowIcon fontSize="inherit" /></IconButton>
         </Tooltip>
       </Stack>
     )}
   ], [t]);
 
+  const [showMerchants, setShowMerchants] = React.useState(false);
   const SummaryView = () => (
     <Box>
-      {!summary && <Typography variant="body2">{t('campaigns_loading')}</Typography>}
+  {!summary && loadingSummary && <SkeletonSection variant="table" rows={3} />}
       {summary && (
-        <Stack direction="row" spacing={2} flexWrap="wrap" sx={{ mb:2 }}>
-          <Chip label={`${t('campaigns_total')}: ${summary.total}`} color="primary" />
-          <Chip label={`${t('campaigns_running_approved')}: ${summary.running_approved_count}`} color="success" />
-          <Chip label={`${t('campaigns_approved_merchants')}: ${summary.approved_merchants?.length||0}`} />
-        </Stack>
-      )}
-      {summary && (
-        <Stack direction={{ xs:'column', md:'row' }} spacing={4} alignItems="flex-start">
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>{t('campaigns_by_status')}</Typography>
-            <Stack spacing={1}>{Object.entries(summary.by_status||{}).map(([k,v])=> <Chip key={k} label={`${k}: ${v}`} size="small" />)}</Stack>
-          </Box>
-          <Box>
-            <Typography variant="subtitle2" gutterBottom>{t('campaigns_by_user_status')}</Typography>
-            <Stack spacing={1}>{Object.entries(summary.by_user_status||{}).map(([k,v])=> <Chip key={k} label={`${k}: ${v}`} size="small" />)}</Stack>
-          </Box>
-        </Stack>
+        <>
+          <Stack direction={{ xs:'column', sm:'row' }} spacing={2} flexWrap="wrap" sx={{ mb:2 }}>
+            <Box sx={{ p:1.5, flex:1, minWidth:200, borderRadius:2, bgcolor:'primary.main', color:'primary.contrastText' }}>
+              <Typography variant="caption" sx={{ opacity:0.8 }}>{t('campaigns_total')}</Typography>
+              <Typography variant="h6" sx={{ m:0 }}>{summary.total}</Typography>
+            </Box>
+            <Box sx={{ p:1.5, flex:1, minWidth:200, borderRadius:2, bgcolor:'success.main', color:'success.contrastText' }}>
+              <Typography variant="caption" sx={{ opacity:0.8 }}>{t('campaigns_running_approved')}</Typography>
+              <Typography variant="h6" sx={{ m:0 }}>{summary.running_approved_count}</Typography>
+            </Box>
+            <Box sx={{ p:1.5, flex:1, minWidth:220, borderRadius:2, bgcolor:'info.main', color:'info.contrastText', position:'relative' }}>
+              <Typography variant="caption" sx={{ opacity:0.8 }}>{t('campaigns_approved_merchants')}</Typography>
+              <Typography variant="h6" sx={{ m:0 }}>{summary.approved_merchants?.length||0}</Typography>
+              <Button size="small" variant="outlined" onClick={()=>setShowMerchants(s=>!s)} aria-label={showMerchants ? 'Ẩn danh sách merchants đã duyệt' : 'Xem danh sách merchants đã duyệt'} sx={{ position:'absolute', top:8, right:8, bgcolor:'rgba(255,255,255,0.15)' }}>{showMerchants ? 'Ẩn' : 'Xem'}</Button>
+            </Box>
+          </Stack>
+          <Collapse in={showMerchants} unmountOnExit>
+            <Paper variant="outlined" sx={{ p:1.5, mb:2 }}>
+              <Typography variant="subtitle2" gutterBottom>{t('campaigns_approved_merchants')}</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                {(summary.approved_merchants||[]).map(m => <Chip key={m} size="small" label={m} />)}
+              </Stack>
+            </Paper>
+          </Collapse>
+          <Stack direction={{ xs:'column', md:'row' }} spacing={4} alignItems="flex-start">
+            <Box flex={1}>
+              <Typography variant="subtitle2" gutterBottom>{t('campaigns_by_status')}</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{Object.entries(summary.by_status||{}).map(([k,v])=> <Chip key={k} label={`${k}: ${v}`} size="small" />)}</Stack>
+            </Box>
+            <Box flex={1}>
+              <Typography variant="subtitle2" gutterBottom>{t('campaigns_by_user_status')}</Typography>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>{Object.entries(summary.by_user_status||{}).map(([k,v])=> <Chip key={k} label={`${k}: ${v}`} size="small" />)}</Stack>
+            </Box>
+          </Stack>
+        </>
       )}
     </Box>
   );
@@ -158,9 +181,9 @@ export default function CampaignsDashboard() {
       </Stack>
       <DataTable
         tableId="campaigns"
-        rows={campaignRows}
-        columns={columnsTable.map(c => ({ key: c.field, label: c.headerName, sortable: ['campaign_id','merchant','status','user_registration_status'].includes(c.field) }))}
-        loading={loadingCampaigns}
+  rows={campaignsData || []}
+  columns={columnsTable.map(c => ({ key: c.field, label: c.headerName, sortable: ['campaign_id','merchant','status','user_registration_status'].includes(c.field) }))}
+  loading={campaignsLoading}
         enableQuickFilter
         enablePagination
         initialPageSize={25}
@@ -187,56 +210,9 @@ export default function CampaignsDashboard() {
       {tab===0 && <SummaryView />}
       {tab===1 && <AlertsView />}
       {tab===2 && <TableView />}
-      <Drawer anchor="right" open={drawerOpen} onClose={()=>setDrawerOpen(false)} PaperProps={{ sx:{ width:{ xs:'100%', sm:500 } } }}>
-        <Box sx={{ p:2, height:'100%', display:'flex', flexDirection:'column' }}>
-          <Typography variant="h6" gutterBottom>{t('campaigns_extras_title')}</Typography>
-          <Divider sx={{ mb:2 }} />
-          {extrasLoading && <Stack alignItems="center" justifyContent="center" sx={{ flex:1 }}><CircularProgress size={32} /></Stack>}
-          {!extrasLoading && !extras && <Typography variant="body2" color="text.secondary">{t('campaigns_extras_loading')}</Typography>}
-          {!extrasLoading && extras && extras.error && <Typography color="error" variant="body2">{extras.error}</Typography>}
-          {!extrasLoading && extras && !extras.error && (
-            <Box sx={{ overflowY:'auto', flex:1 }}>
-              <Stack spacing={1} sx={{ mb:2 }}>
-                <Chip label={`ID: ${extras.campaign_id}`} size="small" />
-                {extras.merchant && <Chip label={t('campaigns_extras_merchant') + ': ' + extras.merchant} size="small" />}
-                {extras.detail?.status && <Chip label={t('campaigns_extras_status') + ': ' + extras.detail.status} size="small" />}
-                {extras.detail?.approval && <Chip label={t('campaigns_extras_approval') + ': ' + extras.detail.approval} size="small" />}
-                {extras.detail?.user_registration_status && <Chip label={t('campaigns_extras_user_status') + ': ' + extras.detail.user_registration_status} size="small" />}
-                {extras.detail?.cookie_duration && <Chip label={t('campaigns_extras_cookie') + ': ' + extras.detail.cookie_duration} size="small" />}
-              </Stack>
-              <Typography variant="subtitle2" gutterBottom>{t('campaigns_extras_promotions')} ({extras.counts?.promotions})</Typography>
-              {(!extras.promotions || extras.promotions.length===0) && <Typography variant="body2" color="text.secondary" sx={{ mb:1 }}>{t('campaigns_extras_empty')}</Typography>}
-              <List dense sx={{ mb:2 }}>
-                {Array.isArray(extras.promotions) && extras.promotions.map((p,i)=>(
-                  <ListItem key={i} disableGutters>
-                    <ListItemText
-                      primary={p.name || p.coupon || ('#'+(i+1))}
-                      secondary={(p.content||'') + (p.coupon?` | ${p.coupon}`:'')}
-                    />
-                  </ListItem>
-                ))}
-              </List>
-              <Typography variant="subtitle2" gutterBottom>{t('campaigns_extras_policies')} ({extras.counts?.commission_policies})</Typography>
-              {(!extras.commission_policies || extras.commission_policies.length===0) && <Typography variant="body2" color="text.secondary" sx={{ mb:1 }}>{t('campaigns_extras_empty')}</Typography>}
-              <List dense>
-                {Array.isArray(extras.commission_policies) && extras.commission_policies.map((c,i)=>(
-                  <ListItem key={i} disableGutters>
-                    <ListItemText
-                      primary={`${c.reward_type || ''} ${c.sales_ratio!=null? ('- ' + c.sales_ratio + '%'):''}`}
-                      secondary={c.target_month || ''}
-                    />
-                  </ListItem>
-                ))}
-              </List>
-              <Typography variant="subtitle2" sx={{ mt:2 }}>Raw:</Typography>
-              <pre style={{ fontSize:11, maxHeight:160, overflow:'auto', background:'#111', color:'#0f0', padding:8 }}>{JSON.stringify(extras, null, 2)}</pre>
-            </Box>
-          )}
-          <Box sx={{ pt:1 }}>
-            <Button fullWidth variant="outlined" onClick={()=>setDrawerOpen(false)}>Đóng</Button>
-          </Box>
-        </Box>
-      </Drawer>
+      <React.Suspense fallback={null}>
+        <CampaignExtrasDrawerLazy open={drawerOpen} onClose={()=>setDrawerOpen(false)} extras={extras} loading={extrasLoading} />
+      </React.Suspense>
     </Paper>
   );
 }

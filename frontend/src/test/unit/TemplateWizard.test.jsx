@@ -22,8 +22,8 @@ describe('TemplateWizard', () => {
     await user.type(screen.getByLabelText(/Platform/i), 'shopee');
     await user.click(screen.getByRole('button', { name:/Tiếp tục/i }));
     // Step 2 -> template already has {target}
-    const templateField = screen.getByLabelText(/Template/i);
-    await user.type(templateField, ''); // no-op ensure present
+  screen.getByTestId('wizard-template');
+  // Field đã có giá trị mặc định, không cần gõ gì
     // Add param
     await user.click(screen.getByRole('button', { name:/Thêm param/i }));
     const keyInputs = screen.getAllByLabelText(/Key/i);

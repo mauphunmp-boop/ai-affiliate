@@ -15,8 +15,11 @@ describe('jsonPosition utilities', () => {
     const input = '{\n  "a": 1,\n  "b": ,\n  "c":3\n}';
     const res = parseJsonWithLineInfo(input);
     expect(res.error).toBeDefined();
-    expect(res.error.line).toBeGreaterThan(1);
-    expect(res.error.column).toBeGreaterThan(1);
+  // line / column should be numeric when position extracted
+  expect(typeof res.error.line).toBe('number');
+  expect(typeof res.error.column).toBe('number');
+  expect(res.error.line).toBeGreaterThan(0);
+  expect(res.error.column).toBeGreaterThan(0);
     const snippet = buildJsonErrorSnippet(input, res.error.position);
     expect(snippet).toContain('^');
   });

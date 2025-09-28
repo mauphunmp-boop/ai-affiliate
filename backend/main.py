@@ -1,6 +1,10 @@
 import logging
 import traceback
-import os, hmac, hashlib, base64, json, time, asyncio
+import os, hmac, hashlib, base64, json, time, asyncio, sys
+# Bootstrap: đảm bảo thư mục backend (chứa file này) nằm trong sys.path
+_BACKEND_DIR = os.path.dirname(__file__)
+if _BACKEND_DIR not in sys.path:
+    sys.path.append(_BACKEND_DIR)
 from urllib.parse import urlparse, quote_plus, parse_qsl, urlencode, urlunparse
 from typing import Optional, Dict, List, Any, Literal
 
@@ -1010,7 +1014,7 @@ def summary_web_vitals(
     db: Session = Depends(get_db)
 ):
     # Lấy dữ liệu gần nhất trong window (khoảng thời gian) giới hạn max_rows
-    cutoff = datetime.utcnow().replace(tzinfo=UTC) - timedelta(minutes=window_minutes)
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     rows = (
         db.query(models.WebVitalMetric)
         .filter(models.WebVitalMetric.timestamp >= cutoff)
@@ -1079,7 +1083,7 @@ def trends_web_vitals(
     max_rows: int = Query(10000, ge=100, le=50000, description="Giới hạn bản ghi đọc (bảo vệ bộ nhớ)"),
     db: Session = Depends(get_db)
 ):
-    cutoff = datetime.utcnow().replace(tzinfo=UTC) - timedelta(minutes=window_minutes)
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
     q = db.query(models.WebVitalMetric).filter(models.WebVitalMetric.timestamp >= cutoff)
     requested: list[str] | None = None
     if names:
@@ -3301,7 +3305,10 @@ def list_catalog_commissions(
     return crud.list_commission_policies(db, skip=skip, limit=limit, campaign_id=campaign_id)
 
 # --- Import sản phẩm từ Excel ---
-import pandas as pd
+try:
+    import pandas as pd  # type: ignore
+except Exception:
+    pd = None  # type: ignore
 @app.post(
     "/offers/import-excel",
     tags=["Offers 🛒"],
@@ -3400,7 +3407,10 @@ async def import_offers_excel(file: UploadFile = File(...), db: Session = Depend
     
     def _opt_str(v):
         try:
-            import pandas as _pd
+            try:
+                import pandas as _pd  # type: ignore
+            except Exception:
+                _pd = None  # type: ignore
             if v is None or (isinstance(v, float) and _pd.isna(v)) or (hasattr(_pd, "isna") and _pd.isna(v)):
                 return None
         except Exception:
@@ -3743,7 +3753,10 @@ def export_offers_excel(
     db: Session = Depends(get_db)
 ):
     import os, json
-    import pandas as pd
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        pd = None  # type: ignore
     from collections import defaultdict
 
     # 1) Products: chỉ lấy offers gốc (datafeeds/top-products/manual/excel) — KHÔNG bao gồm promotions-source
@@ -4116,7 +4129,10 @@ def export_offers_excel(
     description="Tải file mẫu có sẵn 4 sheet với header 2 hàng; đánh dấu (*) ở các cột bắt buộc của Products."
 )
 def export_excel_template():
-    import pandas as pd
+    try:
+        import pandas as pd  # type: ignore
+    except Exception:
+        pd = None  # type: ignore
     # Tạo DataFrames rỗng với đúng cột và chèn hàng tiêu đề TV
     trans_products = {
         "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "source_type": "Loại nguồn",
@@ -4153,33 +4169,58 @@ def export_excel_template():
         header = {c: cols_map.get(c, c) for c in df.columns}
         return pd.concat([pd.DataFrame([header]), df], ignore_index=True)
 
-    df_products = _df_with_header(trans_products)
-    df_campaigns = _df_with_header(trans_campaigns)
-    df_commissions = _df_with_header(trans_commissions)
-    df_promotions = _df_with_header(trans_promotions)
-
     output = io.BytesIO()
-    with pd.ExcelWriter(
-        output,
-        engine="xlsxwriter",
-        engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}},
-    ) as writer:
-        df_products.to_excel(writer, sheet_name="Products", index=False)
-        df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
-        df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
-        df_promotions.to_excel(writer, sheet_name="Promotions", index=False)
+    if pd is not None:
+        # Nhánh đầy đủ (có pandas)
+        df_products = _df_with_header(trans_products)
+        df_campaigns = _df_with_header(trans_campaigns)
+        df_commissions = _df_with_header(trans_commissions)
+        df_promotions = _df_with_header(trans_promotions)
+        with pd.ExcelWriter(
+            output,
+            engine="xlsxwriter",
+            engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}},
+        ) as writer:
+            df_products.to_excel(writer, sheet_name="Products", index=False)
+            df_campaigns.to_excel(writer, sheet_name="Campaigns", index=False)
+            df_commissions.to_excel(writer, sheet_name="Commissions", index=False)
+            df_promotions.to_excel(writer, sheet_name="Promotions", index=False)
 
-        # Style the Vietnamese header row (row index 1) as bold + italic
-        workbook = writer.book
-        fmt_vi_header = workbook.add_format({"bold": True, "italic": True})
-        for sheet_name in ("Products", "Campaigns", "Commissions", "Promotions"):
-            ws = writer.sheets.get(sheet_name)
-            if ws is not None:
-                try:
-                    ws.set_row(1, None, fmt_vi_header)
-                except Exception:
-                    pass
-    output.seek(0)
+            # Style header TV (row 1)
+            try:
+                workbook = writer.book
+                fmt_vi_header = workbook.add_format({"bold": True, "italic": True})
+                for sheet_name in ("Products", "Campaigns", "Commissions", "Promotions"):
+                    ws = writer.sheets.get(sheet_name)
+                    if ws is not None:
+                        ws.set_row(1, None, fmt_vi_header)
+            except Exception:
+                pass
+        output.seek(0)
+    else:
+        # Fallback không cần pandas: dùng openpyxl tạo workbook tối thiểu
+        from openpyxl import Workbook
+        wb = Workbook()
+        def _sheet(name: str, mapping: dict):
+            ws = wb.create_sheet(title=name)
+            # Dòng 1: header kỹ thuật; Dòng 2: header TV
+            keys = list(mapping.keys())
+            ws.append(keys)
+            ws.append([mapping[k] for k in keys])
+            return ws
+        # openpyxl tạo mặc định sheet "Sheet" đầu tiên → đổi hoặc xoá
+        default = wb.active
+        default.title = "Products"
+        # điền Products
+        keys_prod = list(trans_products.keys())
+        default.append(keys_prod)
+        default.append([trans_products[k] for k in keys_prod])
+        # Tạo các sheet còn lại
+        _sheet("Campaigns", trans_campaigns)
+        _sheet("Commissions", trans_commissions)
+        _sheet("Promotions", trans_promotions)
+        wb.save(output)
+        output.seek(0)
 
     filename = f"offers_template_{int(time.time())}.xlsx"
     headers = {"Content-Disposition": f"attachment; filename={filename}"}

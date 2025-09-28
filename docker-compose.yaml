@@ -19,6 +19,22 @@ services:
       POSTGRES_DB: affiliate_db
       AFF_SECRET: "${AFF_SECRET}"   # lấy từ file .env (khuyến nghị) hoặc bạn có thể đặt thẳng chuỗi bí mật
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: affiliate_ai_frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - web
+    # Chạy lại npm install để đảm bảo đồng bộ khi volume mount thay thế layer COPY
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+
   db:
     image: postgres:15
     container_name: affiliate_ai_db

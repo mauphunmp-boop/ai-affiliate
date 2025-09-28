@@ -6,7 +6,8 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import SaveIcon from '@mui/icons-material/Save';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import BoltIcon from '@mui/icons-material/Bolt';
-import { listApiConfigs, upsertApiConfig, setIngestPolicy, setCheckUrlsPolicy, setLinkcheckConfig, getLinkcheckFlags } from '../../api.js';
+import { listApiConfigs, upsertApiConfig, setLinkcheckConfig, getLinkcheckFlags } from '../../api.js';
+import { setIngestPolicy, setCheckUrlsPolicy } from '../../api/ingest.js';
 import DataTable from '../../components/DataTable.jsx';
 import { useNotify } from '../../components/NotificationProvider.jsx';
 import { useT } from '../../i18n/I18nProvider.jsx';
@@ -30,14 +31,12 @@ export default function APIConfigsPage() {
     try {
       const res = await listApiConfigs();
       setRows(res.data || []);
-    } catch (e) {
-      notify('error', e?.normalized?.message || e.message || 'Error');
+    } catch (err) {
+      notify('error', err?.normalized?.message || err.message || 'Error');
     } finally { setLoading(false); }
   }, [notify]);
 
-  React.useEffect(()=>{ load(); fetchFlags(); }, [load]);
-
-  const fetchFlags = async () => {
+  const fetchFlags = React.useCallback(async () => {
     setFlagsLoading(true);
     try {
       const res = await getLinkcheckFlags();
@@ -47,10 +46,12 @@ export default function APIConfigsPage() {
       if (f.linkcheck_mod) setLinkcheckMod(String(f.linkcheck_mod));
       if (f.linkcheck_limit) setLinkcheckLimit(String(f.linkcheck_limit));
       notify('info', t('linkcheck_flags_loaded'));
-    } catch (e) {
+    } catch {
       // silent
     } finally { setFlagsLoading(false); }
-  };
+  }, [notify, t]);
+
+  React.useEffect(()=>{ load(); fetchFlags(); }, [load, fetchFlags]);
 
   const openAdd = () => { setEditing(null); setForm({ name:'', base_url:'', api_key:'', model:'' }); setOpen(true); };
   const openEdit = (row) => { setEditing(row); setForm({ name:row.name, base_url:row.base_url, api_key:row.api_key, model:row.model||'' }); setOpen(true); };
@@ -65,8 +66,8 @@ export default function APIConfigsPage() {
       notify('success', t('api_configs_saved'));
       setOpen(false);
       load();
-    } catch (e) {
-      notify('error', e?.normalized?.message || e.message || 'Error');
+    } catch (err) {
+      notify('error', err?.normalized?.message || err.message || 'Error');
     }
   };
 
@@ -93,8 +94,8 @@ export default function APIConfigsPage() {
       });
       notify('success', t('api_configs_saved'));
       fetchFlags();
-    } catch (e) {
-      notify('error', e?.normalized?.message || e.message || 'Error');
+    } catch (err) {
+      notify('error', err?.normalized?.message || err.message || 'Error');
     }
   };
 

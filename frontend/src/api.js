@@ -51,8 +51,15 @@ export const aiSuggest = (query, provider = "groq") =>
   api.post(`/ai/suggest?provider=${encodeURIComponent(provider)}&query=${encodeURIComponent(query)}`);
 
 // Thêm sau đoạn trên (mới hoàn toàn) — ngay dưới phần "AI Suggest"
-export const getOffers = (merchant) =>
-  api.get(`/offers${merchant ? `?merchant=${encodeURIComponent(merchant)}` : ""}`);
+// Offers: hỗ trợ phân trang (skip, limit) + merchant filter
+export const getOffers = ({ merchant, page=1, pageSize=20 } = {}) => {
+  const skip = (Math.max(1, page) - 1) * pageSize;
+  const params = new URLSearchParams();
+  params.set('skip', String(skip));
+  params.set('limit', String(pageSize));
+  if (merchant) params.set('merchant', merchant);
+  return api.get(`/offers?${params.toString()}`);
+};
 
 // Affiliate convert (dùng cho Chatbot/UI trước khi render link)
 export const affConvert = (payload) => api.post("/aff/convert", payload);

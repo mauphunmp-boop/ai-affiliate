@@ -19,6 +19,7 @@ import { useT } from '../../i18n/I18nProvider.jsx';
 
 export default function TemplatesPage() {
   const { t } = useT();
+  const tt = React.useCallback((k, fb) => { const v = t(k); return v === k ? fb : v; }, [t]);
   const notify = useNotify();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -36,10 +37,18 @@ export default function TemplatesPage() {
   const [enabledFilter, setEnabledFilter] = useState('all'); // all | on | off
   const [announce, setAnnounce] = useState('');
 
+  // Test hook: cho phép test thay đổi filter trực tiếp không cần tương tác UI phức tạp (tránh loop MUI trong jsdom)
+  if (import.meta.env?.TEST && typeof window !== 'undefined') {
+    // Không overwrite nếu đã tồn tại để tránh gây re-render không cần thiết
+    if (!window.__TEST__setTemplatesEnabledFilter) {
+      window.__TEST__setTemplatesEnabledFilter = (v) => setEnabledFilter(v);
+    }
+  }
+
   const load = async () => {
     setLoading(true); setError('');
     try { const res = await listAffiliateTemplates(); setRows(res.data || []); }
-    catch(e){ setError(e?.response?.data?.detail || e.message); }
+  catch(err){ setError(err?.response?.data?.detail || err.message); }
     finally { setLoading(false); }
   };
   useEffect(()=>{ load(); }, []);
@@ -84,8 +93,8 @@ export default function TemplatesPage() {
       }
       await load();
       setOpen(false);
-    } catch (e) {
-      const msg = e.normalized?.message || e?.response?.data?.detail || e.message || 'Lỗi';
+    } catch (err) {
+      const msg = err.normalized?.message || err?.response?.data?.detail || err.message || 'Lỗi';
       notify('error', msg);
     }
   };
@@ -97,8 +106,8 @@ export default function TemplatesPage() {
       setAutoMsg(res.data);
       notify('success', `Auto-generate: tạo mới ${res.data.created?.length || 0}, bỏ qua ${res.data.skipped?.length || 0}`);
       await load();
-    } catch (e) {
-      const msg = e.normalized?.message || e?.response?.data?.detail || e.message;
+    } catch (err) {
+      const msg = err.normalized?.message || err?.response?.data?.detail || err.message;
       setAutoMsg({ error: msg });
       notify('error', msg);
     }
@@ -111,7 +120,7 @@ export default function TemplatesPage() {
       await deleteAffiliateTemplate(row.id);
       setRows(r => r.filter(x => x.id !== row.id));
       notify('success', 'Đã xoá template');
-    } catch (e) {
+    } catch {
       notify('error', 'Xoá thất bại');
     } finally { setConfirm({ open:false, row:null }); }
   };
@@ -184,6 +193,9 @@ export default function TemplatesPage() {
   const filtered = rows.filter(r => enabledFilter === 'all' ? true : enabledFilter === 'on' ? r.enabled : !r.enabled);
   const dataRows = filtered.map(r => ({ ...r, id: r.id }));
 
+  const invertSelection = React.useCallback(() => {
+    setSelected(r => rows.filter(row => !r.includes(row.id)).map(row => row.id));
+  }, [rows]);
   // Keyboard shortcuts: Alt+A (select all filtered), Alt+I (invert), Alt+C (clear selection)
   React.useEffect(()=>{
     const handler = (e) => {
@@ -194,11 +206,7 @@ export default function TemplatesPage() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [filtered, invertSelection]);
-
-  const invertSelection = () => {
-    setSelected(rows.filter(r => !selected.includes(r.id)).map(r => r.id));
-  };
+  }, [filtered, invertSelection, t]);
 
   return (
     <Box>
@@ -209,12 +217,12 @@ export default function TemplatesPage() {
   <Button startIcon={<BoltIcon />} onClick={doAuto} disabled={loading}>{t('action_auto_generate')}</Button>
   <Button startIcon={<RefreshIcon />} onClick={load} disabled={loading}>{t('action_refresh')}</Button>
         <FormControl size="small" sx={{ minWidth:130 }}>
-          <InputLabel id="enabled-filter-label">{t('filter_enabled')}</InputLabel>
+          <InputLabel id="enabled-filter-label">{tt('filter_enabled','Enabled')}</InputLabel>
           <Select labelId="enabled-filter-label" label="Enabled" value={enabledFilter} onChange={e=>setEnabledFilter(e.target.value)}
             inputProps={{ 'aria-label':'Lọc theo trạng thái bật/tắt' }}>
-            <MenuItem value="all">{t('filter_all')}</MenuItem>
-            <MenuItem value="on">{t('filter_on')}</MenuItem>
-            <MenuItem value="off">{t('filter_off')}</MenuItem>
+            <MenuItem value="all">{tt('filter_all','ALL')}</MenuItem>
+            <MenuItem value="on">{tt('filter_on','ON')}</MenuItem>
+            <MenuItem value="off">{tt('filter_off','OFF')}</MenuItem>
           </Select>
         </FormControl>
         <Tooltip title={t('tooltip_select_all_filtered')}><span>

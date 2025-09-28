@@ -4,7 +4,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
-import { importOffersExcel, downloadExportTemplate } from '../../../api/excel';
+import { importOffersExcel, downloadExportTemplate } from '../../api/excel.js';
 
 function prettyNumber(n) { return typeof n === 'number' ? n.toLocaleString() : n; }
 
