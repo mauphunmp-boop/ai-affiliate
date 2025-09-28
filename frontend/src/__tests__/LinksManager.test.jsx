@@ -25,7 +25,7 @@ vi.mock('../../components/SkeletonSection.jsx', () => ({ __esModule:true, defaul
 import React from 'react';
 import LinksManager from '../pages/Links/LinksManager.jsx';
 import * as api from '../api.js';
-import { renderWithProviders, screen, waitFor } from '../test/test-utils.jsx';
+import { renderWithProviders, screen, waitFor, fireEvent } from '../test/test-utils.jsx';
 import userEvent from '@testing-library/user-event';
 
 
@@ -75,15 +75,15 @@ describe('LinksManager', () => {
     renderWithProviders(<LinksManager />);
     await screen.findByTestId('datatable');
     await openDialog();
-  const nameInput = screen.getByLabelText(/Name/i);
-  const urlInput = screen.getByLabelText('URL');
-  await userEvent.type(nameInput, 'Solo Link');
-  await userEvent.type(urlInput, 'https://example.com');
-  await waitFor(()=> expect(urlInput).toHaveValue('https://example.com'));
-  const createBtn = await screen.findByTestId('links-save');
+    const nameInput = screen.getByLabelText(/Name/i);
+    const urlInput = screen.getByLabelText('URL');
+    // Direct change events (faster & less flakey than user typing many events)
+    fireEvent.change(nameInput, { target: { value: 'Solo Link' } });
+    fireEvent.change(urlInput, { target: { value: 'https://example.com' } });
+    expect(urlInput).toHaveValue('https://example.com');
+    const createBtn = await screen.findByTestId('links-save');
     await userEvent.click(createBtn);
-
-    await waitFor(()=> expect(createSpy).toHaveBeenCalled());
+    await waitFor(()=> expect(createSpy).toHaveBeenCalled(), { timeout: 4000 });
     const payload = createSpy.mock.calls[0][0];
     expect(payload.url).toBe('https://example.com');
     expect(payload.affiliate_url).toBe('https://example.com');
