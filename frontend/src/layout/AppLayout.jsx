@@ -48,21 +48,22 @@ export default function AppLayout() {
       <Box sx={{ flex:1, overflow:'auto' }}>
         <List>
           {navItems.map(item => {
-            // Add `end` for base items that are prefixes of other routes to avoid sticky active state (e.g. /offers)
             const needEnd = item.to === '/offers';
             return (
               <ListItem key={item.to} disablePadding onClick={()=>{ if(isMobile) setMobileOpen(false); }}>
-                <ListItemButton
-                  component={NavLink}
+                <NavLink
                   to={item.to}
-                  end={needEnd ? true : undefined}
-                  sx={{ '&.active': { backgroundColor: 'action.selected' } }}
+                  end={needEnd}
+                  data-nav-item={item.to}
                   onMouseEnter={()=>window.__routePreloaders?.[item.key]?.()}
                   onFocus={()=>window.__routePreloaders?.[item.key]?.()}
-                  data-nav-item={item.to}
+                  style={{ flex:1, textDecoration:'none', color:'inherit' }}
+                  className={({ isActive }) => isActive ? 'active navlink-wrapper' : 'navlink-wrapper'}
                 >
-                  <ListItemText primary={item.label} />
-                </ListItemButton>
+                  <ListItemButton sx={{ '&.active, .active &': { backgroundColor: 'action.selected' } }}>
+                    <ListItemText primary={item.label} />
+                  </ListItemButton>
+                </NavLink>
               </ListItem>
             );
           })}

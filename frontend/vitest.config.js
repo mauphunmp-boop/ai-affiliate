@@ -26,7 +26,7 @@ export default defineConfig({
     // Bật coverage để lấy baseline. Thresholds sẽ thêm ở bước sau (todo riêng) để tránh fail sớm.
     coverage: {
       provider: 'v8',
-      reporter: ['text','lcov'],
+  reporter: ['text','lcov','json-summary'],
       include: ['src/**/*.{js,jsx}'],
       exclude: ['src/test/**','src/**/*.d.ts'],
       // Chưa đặt thresholds ở baseline; sẽ cấu hình trong bước thiết lập ngưỡng.

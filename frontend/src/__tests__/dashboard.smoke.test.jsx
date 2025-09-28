@@ -7,12 +7,9 @@ import { I18nProvider } from '../i18n/I18nProvider.jsx';
 function wrap(ui) { return <I18nProvider initial="vi">{ui}</I18nProvider>; }
 
 describe('Dashboard smoke', () => {
-  it('renders KPI labels', () => {
-  // Debug marker: có thể bật lại nếu cần theo dõi chạy test
-  console.debug('[dashboard.smoke.test] start render');
+  it('renders KPI labels', async () => {
     render(wrap(<Dashboard />));
-    // Có thể xuất hiện nhiều phần tử chứa 'Offers' (nút nhanh, caption KPI) hoặc tiêu đề 'Tổng quan'
-    const matches = screen.getAllByText(/Offers|Tổng quan/i);
-    expect(matches.length).toBeGreaterThan(0);
+    const first = await screen.findAllByText(/Offers|Tổng quan/i);
+    expect(first.length).toBeGreaterThan(0);
   });
 });

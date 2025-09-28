@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, act } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import TemplatesPage from '../../pages/Affiliate/TemplatesPage.jsx';
 import { ColorModeProvider } from '../../context/ColorModeContext.jsx';
 import NotificationProvider from '../../components/NotificationProvider.jsx';
@@ -23,7 +24,7 @@ vi.mock('../../components/DataTable.jsx', () => ({
 }));
 
 function wrap(ui){
-  return <ColorModeProvider><NotificationProvider>{ui}</NotificationProvider></ColorModeProvider>;
+  return <MemoryRouter><ColorModeProvider><NotificationProvider>{ui}</NotificationProvider></ColorModeProvider></MemoryRouter>;
 }
 
 describe('TemplatesPage enabled filter', () => {

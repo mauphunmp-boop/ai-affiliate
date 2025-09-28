@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import TemplateWizard from '../../components/TemplateWizard.jsx';
 import { vi } from 'vitest';
@@ -31,9 +31,7 @@ describe('TemplateWizard', () => {
     const valueInputs = screen.getAllByLabelText(/Value/i);
     await user.type(valueInputs[valueInputs.length-1], 'wizard');
     await user.click(screen.getByRole('button', { name:/Tạo template/i }));
-    // Expect onCreated eventually
-    // (We cannot easily assert notification text without exposing queue, rely on callback)
-    await new Promise(r=>setTimeout(r,10));
-    expect(onCreated).toHaveBeenCalled();
+    // Wait for callback without manual timeout to satisfy act()
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 });

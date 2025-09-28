@@ -12,5 +12,4 @@ export const ingestDatafeedsAll = (payload={}) => api.post('/ingest/datafeeds/al
 export const ingestProducts = (payload={}) => api.post('/ingest/products', payload);
 export const ingestCommissions = (payload={}) => api.post('/ingest/commissions', payload);
 
-// Presets if exist (seen in tests: /ingest/presets/tiktokshop )
-export const ingestPresetTiktok = (payload={}) => api.post('/ingest/presets/tiktokshop', payload);
+// Note: Legacy preset TikTok ingest removed per requirements.

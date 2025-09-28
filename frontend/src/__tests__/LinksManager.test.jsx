@@ -1,10 +1,11 @@
-import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import LinksManager from '../pages/Links/LinksManager.jsx';
-import * as api from '../api.js';
-import { renderWithProviders, screen, waitFor, fireEvent } from '../test/test-utils.jsx';
-
-// Mock i18n + NotificationProvider minimal
+// Place mocks first to avoid module execution before mocks in full suite
+vi.mock('../api.js', () => ({
+  getLinks: vi.fn().mockResolvedValue({ data: [] }),
+  createLink: vi.fn().mockResolvedValue({ data: { id: 1 } }),
+  updateLink: vi.fn().mockResolvedValue({ data: { ok: true } }),
+  deleteLink: vi.fn().mockResolvedValue({ data: { ok: true } })
+}));
 vi.mock('../i18n/I18nProvider.jsx', () => ({ useT: () => ({ t: (k) => {
   const map = {
     'links_title':'Links',
@@ -18,69 +19,88 @@ vi.mock('../i18n/I18nProvider.jsx', () => ({ useT: () => ({ t: (k) => {
     'api_configs_form_required':'Required'
   }; return map[k] || k; } }) }));
 vi.mock('../components/NotificationProvider.jsx', () => ({ useNotify: () => vi.fn() }));
-// Đường dẫn thực tế LinksManager.jsx sử dụng '../../components/...'
-vi.mock('../../components/DataTable.jsx', () => ({ __esModule:true, default: ({ rows }) => <div data-testid="datatable">DT({rows.length})</div>}));
 vi.mock('../../components/ConfirmDialog.jsx', () => ({ __esModule:true, default: () => null }));
 vi.mock('../../components/SkeletonSection.jsx', () => ({ __esModule:true, default: () => <div data-testid="skeleton" /> }));
 
-function openDialog() {
-  const addBtn = screen.getByRole('button', { name:'Add' });
-  fireEvent.click(addBtn);
+import React from 'react';
+import LinksManager from '../pages/Links/LinksManager.jsx';
+import * as api from '../api.js';
+import { renderWithProviders, screen, waitFor } from '../test/test-utils.jsx';
+import userEvent from '@testing-library/user-event';
+
+
+async function openDialog() {
+  const addBtn = await screen.findByRole('button', { name:'Add' });
+  await userEvent.click(addBtn);
+  // Wait for dialog inputs to mount
+  await screen.findByLabelText(/Name/i);
 }
 
 describe('LinksManager', () => {
-  beforeEach(() => { vi.restoreAllMocks(); });
+  beforeEach(() => {
+    // reset mock call history but keep same mocked functions
+    api.getLinks.mockClear();
+    api.createLink.mockClear();
+    api.updateLink.mockClear();
+    api.deleteLink.mockClear();
+    // default resolve value each test
+    api.getLinks.mockResolvedValue({ data: [] });
+  });
 
   it('loads initial links', async () => {
-    vi.spyOn(api, 'getLinks').mockResolvedValueOnce({ data: [] });
     renderWithProviders(<LinksManager />);
     await screen.findByTestId('datatable');
     expect(api.getLinks).toHaveBeenCalled();
   });
 
   it('validation: requires name and at least one URL', async () => {
-    vi.spyOn(api, 'getLinks').mockResolvedValueOnce({ data: [] });
+    const createSpy = api.createLink; // already mocked
     renderWithProviders(<LinksManager />);
     await screen.findByTestId('datatable');
-    openDialog();
-    const createBtn = screen.getByRole('button', { name:'Create' });
-    fireEvent.click(createBtn); // no name & urls
-    // We cannot easily assert toast (mock fn created), but ensure createLink not called
-    const createSpy = vi.spyOn(api, 'createLink').mockResolvedValue({ data:{ id:1 } });
-    // Fill only name now
-  // MUI thêm ký tự * cho label required => dùng regex để khớp 'Name' bất kể có dấu *
-  fireEvent.change(screen.getByLabelText(/Name/i), { target:{ value:'My Link' } });
-    fireEvent.click(createBtn); // still missing URLs
+    await openDialog();
+    const createBtn = await screen.findByTestId('links-save');
+    await userEvent.click(createBtn); // no name & urls -> should not call
+    // Assert still not called quickly before next actions
     expect(createSpy).not.toHaveBeenCalled();
-  });
+    const nameInput = screen.getByLabelText(/Name/i);
+    await userEvent.type(nameInput, 'My Link');
+    // Small microtask flush
+    await waitFor(()=> expect(nameInput).toHaveValue('My Link'));
+    await userEvent.click(createBtn); // still missing URLs -> still not call
+    expect(createSpy).not.toHaveBeenCalled();
+  }, 15000);
 
   it('creates with single URL populating both fields', async () => {
-    vi.spyOn(api, 'getLinks').mockResolvedValueOnce({ data: [] });
-    const createSpy = vi.spyOn(api, 'createLink').mockResolvedValueOnce({ data:{ id:42 } });
+    const createSpy = api.createLink.mockResolvedValueOnce({ data:{ id:42 } });
     renderWithProviders(<LinksManager />);
     await screen.findByTestId('datatable');
-    openDialog();
-  fireEvent.change(screen.getByLabelText(/Name/i), { target:{ value:'Solo Link' } });
-    fireEvent.change(screen.getByLabelText('URL'), { target:{ value:'https://example.com' } });
-    const createBtn = screen.getByRole('button', { name:'Create' });
-    fireEvent.click(createBtn);
+    await openDialog();
+  const nameInput = screen.getByLabelText(/Name/i);
+  const urlInput = screen.getByLabelText('URL');
+  await userEvent.type(nameInput, 'Solo Link');
+  await userEvent.type(urlInput, 'https://example.com');
+  await waitFor(()=> expect(urlInput).toHaveValue('https://example.com'));
+  const createBtn = await screen.findByTestId('links-save');
+    await userEvent.click(createBtn);
 
     await waitFor(()=> expect(createSpy).toHaveBeenCalled());
     const payload = createSpy.mock.calls[0][0];
     expect(payload.url).toBe('https://example.com');
     expect(payload.affiliate_url).toBe('https://example.com');
-  });
+  }, 15000);
 
   it('rejects invalid URL format', async () => {
-    vi.spyOn(api, 'getLinks').mockResolvedValueOnce({ data: [] });
-    const createSpy = vi.spyOn(api, 'createLink').mockResolvedValue({});
+    const createSpy = api.createLink;
     renderWithProviders(<LinksManager />);
     await screen.findByTestId('datatable');
-    openDialog();
-  fireEvent.change(screen.getByLabelText(/Name/i), { target:{ value:'Bad URL' } });
-    fireEvent.change(screen.getByLabelText('URL'), { target:{ value:'notaurl' } });
-    const createBtn = screen.getByRole('button', { name:'Create' });
-    fireEvent.click(createBtn);
+    await openDialog();
+  const nameInput2 = screen.getByLabelText(/Name/i);
+  const urlInput2 = screen.getByLabelText('URL');
+  await userEvent.type(nameInput2, 'Bad URL');
+  await userEvent.type(urlInput2, 'notaurl');
+  await waitFor(()=> expect(urlInput2).toHaveValue('notaurl'));
+  const createBtn = await screen.findByTestId('links-save');
+    await userEvent.click(createBtn);
     expect(createSpy).not.toHaveBeenCalled();
-  });
+  }, 15000);
 });

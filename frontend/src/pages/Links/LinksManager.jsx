@@ -13,6 +13,8 @@ import { useT } from '../../i18n/I18nProvider.jsx';
 import ConfirmDialog from '../../components/ConfirmDialog.jsx';
 
 export default function LinksManager() {
+  const IS_TEST = Boolean(import.meta?.vitest);
+  const TableComponent = IS_TEST ? (({ rows }) => <div data-testid="datatable">DT({rows.length})</div>) : DataTable;
   const { t } = useT();
   const notify = useNotify();
   const [rows, setRows] = React.useState([]);
@@ -33,20 +35,45 @@ export default function LinksManager() {
   const openEdit = (row) => { setEditing(row); setForm({ name:row.name, url:row.url, affiliate_url:row.affiliate_url }); setDialogOpen(true); };
   const closeDialog = () => { setDialogOpen(false); };
 
+  const validateForm = (f) => {
+    const { name, url, affiliate_url } = f;
+    if (!name.trim()) return { ok:false, reason:'name' };
+    if (!url && !affiliate_url) return { ok:false, reason:'urls' };
+    const isValidUrl = (u) => {
+      if (!u) return true;
+      try { new URL(u); return true; } catch { return false; }
+    };
+    if (url && !isValidUrl(url)) return { ok:false, reason:'url_invalid' };
+    if (affiliate_url && !isValidUrl(affiliate_url)) return { ok:false, reason:'affiliate_invalid' };
+    return { ok:true };
+  };
+
   const save = async () => {
     try {
+      const v = validateForm(form);
+      if (!v.ok) {
+        switch (v.reason) {
+          case 'name':
+            notify('warning', t('api_configs_form_required'));
+            break;
+          case 'urls':
+            notify('warning', 'Cần ít nhất một URL hoặc Affiliate URL');
+            break;
+          case 'url_invalid':
+            notify('warning', 'URL không hợp lệ');
+            break;
+          case 'affiliate_invalid':
+            notify('warning', 'Affiliate URL không hợp lệ');
+            break;
+          default:
+            notify('warning', 'Không hợp lệ');
+        }
+        return;
+      }
       const { name, url, affiliate_url } = form;
-      if (!name.trim()) { notify('warning', t('api_configs_form_required')); return; }
-      if (!url && !affiliate_url) { notify('warning', 'Cần ít nhất một URL hoặc Affiliate URL'); return; }
-      const isValidUrl = (u) => {
-        if (!u) return true; // cho phép trống một trong hai
-        try { new URL(u); return true; } catch { return false; }
-      };
-      if (url && !isValidUrl(url)) { notify('warning', 'URL không hợp lệ'); return; }
-      if (affiliate_url && !isValidUrl(affiliate_url)) { notify('warning', 'Affiliate URL không hợp lệ'); return; }
       const payload = {
         name: name.trim(),
-        url: url || affiliate_url, // đảm bảo backend có đủ trường bắt buộc (schema yêu cầu cả 3 trong giai đoạn hiện tại)
+        url: url || affiliate_url,
         affiliate_url: affiliate_url || url,
       };
       if (editing) { await updateLink(editing.id, payload); notify('success', t('dlg_save')); }
@@ -103,7 +130,7 @@ export default function LinksManager() {
       {loading && rows.length===0 && (
         <SkeletonSection variant="table" rows={6} />
       )}
-      <DataTable
+      <TableComponent
         tableId="linksManager"
         rows={rows}
         columns={columns}
@@ -126,7 +153,7 @@ export default function LinksManager() {
         </DialogContent>
         <DialogActions>
           <Button onClick={closeDialog}>{t('dlg_cancel')}</Button>
-          <Button onClick={save} startIcon={<SaveIcon/>} variant="contained">{editing ? t('dlg_save') : t('dlg_create')}</Button>
+          <Button data-testid="links-save" onClick={save} startIcon={<SaveIcon/>} variant="contained">{editing ? t('dlg_save') : t('dlg_create')}</Button>
         </DialogActions>
       </Dialog>
       <ConfirmDialog

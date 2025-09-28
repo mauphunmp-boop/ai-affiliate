@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import GettingStartedPanel from '../../components/GettingStartedPanel.jsx';
 
 // Mock API modules
@@ -11,7 +12,11 @@ vi.mock('../../components/NotificationProvider.jsx', () => ({ NotificationProvid
 
 describe('GettingStartedPanel', () => {
   test('renders when configs & templates empty', async () => {
-    render(<GettingStartedPanel />);
+    render(
+      <MemoryRouter>
+        <GettingStartedPanel />
+      </MemoryRouter>
+    );
     await waitFor(() => {
       expect(screen.getByText(/Bắt đầu nhanh|Tạo API Config/i)).toBeTruthy();
     });
