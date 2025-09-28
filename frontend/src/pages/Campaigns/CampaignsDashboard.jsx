@@ -8,14 +8,20 @@ import DataTable from '../../components/DataTable.jsx';
 import { useNotify } from '../../components/NotificationProvider.jsx';
 import { useT } from '../../i18n/I18nProvider.jsx';
 import api from '../../api.js';
+import { useNavigate } from 'react-router-dom';
 import useApiCache from '../../hooks/useApiCache.js';
 import { useRoutePerf } from '../../hooks/useRoutePerf.js';
 const CampaignExtrasDrawerLazy = React.lazy(()=>import('../../components/CampaignExtrasDrawer.jsx'));
 
 export default function CampaignsDashboard() {
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.debug('[CampaignsDashboard] render at', performance.now().toFixed(1));
+  }
   const { t } = useT();
   useRoutePerf('CampaignsDashboard');
   const notify = useNotify();
+  const navigate = useNavigate();
   const [tab, setTab] = React.useState(0);
   const { data: summary, loading: loadingSummary, refresh: refreshSummary } = useApiCache('campaigns_summary', async () => {
     const r = await api.get('/campaigns/summary');
@@ -49,9 +55,25 @@ export default function CampaignsDashboard() {
     const r = await api.get('/campaigns' + (params.toString()?`?${params.toString()}`:''));
     return r.data||[];
   }, { ttlMs:30000, refreshDeps:[filters.status, filters.user_status, filters.merchant] });
-  const loadCampaigns = React.useCallback(async () => { try { await refreshCampaigns(); } catch(e){ notify('error', e?.normalized?.message||e.message); } }, [refreshCampaigns, notify]);
+  // Stabilize refreshCampaigns usage to avoid new function identity every render feeding useEffect loop
+  const refreshCampaignsRef = React.useRef(refreshCampaigns);
+  React.useEffect(()=>{ refreshCampaignsRef.current = refreshCampaigns; }, [refreshCampaigns]);
+  const loadCampaigns = React.useCallback(async () => {
+    try { await refreshCampaignsRef.current(); }
+    catch(e){ notify('error', e?.normalized?.message||e.message); }
+  }, [notify]);
 
-  React.useEffect(()=>{ loadAlerts(); loadCampaigns(); }, [loadCampaigns]);
+  // One-time initial load (summary + alerts + campaigns)
+  React.useEffect(()=>{
+    let mounted = true;
+    (async()=>{
+      try { loadAlerts(); } catch {}
+      try { await loadSummary(); } catch {}
+      loadCampaigns();
+    })();
+    return ()=>{ mounted=false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const backfill = async () => {
     setBackfilling(true);
@@ -92,7 +114,7 @@ export default function CampaignsDashboard() {
     { field:'actions', headerName:'', width:90, renderCell:(_,row)=>(
       <Stack direction="row" spacing={0.5}>
         <Tooltip title={t('campaigns_view_description')}>
-          <IconButton size="small" component="a" href={`/api/campaigns/${encodeURIComponent(row.campaign_id)}/description`} target="_blank" rel="noopener noreferrer"><OpenInNewIcon fontSize="inherit" /></IconButton>
+          <IconButton size="small" component="a" href={`/api/campaigns/${encodeURIComponent(row.campaign_id)}/description`} target="_blank" rel="noopener noreferrer" onClick={(e)=>{ /* allow default open in new tab */ }}><OpenInNewIcon fontSize="inherit" /></IconButton>
         </Tooltip>
         <Tooltip title={t('campaigns_view_extras')}>
           <IconButton
@@ -125,15 +147,24 @@ export default function CampaignsDashboard() {
             <Box sx={{ p:1.5, flex:1, minWidth:220, borderRadius:2, bgcolor:'info.main', color:'info.contrastText', position:'relative' }}>
               <Typography variant="caption" sx={{ opacity:0.8 }}>{t('campaigns_approved_merchants')}</Typography>
               <Typography variant="h6" sx={{ m:0 }}>{summary.approved_merchants?.length||0}</Typography>
-              <Button size="small" variant="outlined" onClick={()=>setShowMerchants(s=>!s)} aria-label={showMerchants ? 'Ẩn danh sách merchants đã duyệt' : 'Xem danh sách merchants đã duyệt'} sx={{ position:'absolute', top:8, right:8, bgcolor:'rgba(255,255,255,0.15)' }}>{showMerchants ? 'Ẩn' : 'Xem'}</Button>
+              <Button size="small" variant="outlined" onClick={()=>{ setShowMerchants(s=>!s); if(import.meta.env.DEV){ console.debug('[CampaignsDashboard] toggle merchants ->', !showMerchants); } }} aria-label={showMerchants ? 'Ẩn danh sách merchants đã duyệt' : 'Xem danh sách merchants đã duyệt'} sx={{ position:'absolute', top:8, right:8, bgcolor:'rgba(255,255,255,0.15)' }}>{showMerchants ? 'Ẩn' : 'Xem'}</Button>
             </Box>
           </Stack>
           <Collapse in={showMerchants} unmountOnExit>
             <Paper variant="outlined" sx={{ p:1.5, mb:2 }}>
               <Typography variant="subtitle2" gutterBottom>{t('campaigns_approved_merchants')}</Typography>
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap data-testid="approved-merchants-list">
                 {(summary.approved_merchants||[]).map(m => <Chip key={m} size="small" label={m} />)}
+                {(!summary.approved_merchants || summary.approved_merchants.length===0) && (
+                  <Typography variant="caption" color="text.secondary">(Không có merchant được duyệt hoặc API trả rỗng)</Typography>
+                )}
               </Stack>
+              {import.meta.env.DEV && (
+                <Box sx={{ mt:1 }}>
+                  <Typography variant="caption" color="text.secondary">DEBUG merchants JSON:</Typography>
+                  <pre style={{ maxHeight:160, overflow:'auto', fontSize:11, margin:0 }}>{JSON.stringify(summary.approved_merchants, null, 2)}</pre>
+                </Box>
+              )}
             </Paper>
           </Collapse>
           <Stack direction={{ xs:'column', md:'row' }} spacing={4} alignItems="flex-start">
@@ -190,6 +221,7 @@ export default function CampaignsDashboard() {
         responsiveCards
         cardTitleKey="name"
         cardSubtitleKeys={[ 'merchant', 'status' ]}
+        onRowActionNavigate={(to)=>{ if(typeof to==='string'){ navigate(to); } }}
       />
     </Box>
   );

@@ -72,7 +72,11 @@ export default function MetricsPage() {
 
   React.useEffect(() => {
     if (!auto) return;
-    const id = setInterval(() => { setRefreshTick(x=>x+1); }, 15000); // 15s
+    if (import.meta.env?.TEST) {
+      // Không tạo interval trong môi trường test để tránh giữ event loop.
+      return;
+    }
+    const id = setInterval(() => { setRefreshTick(x=>x+1); }, 15000); // 15s ngoài test
     return () => clearInterval(id);
   }, [auto]);
 

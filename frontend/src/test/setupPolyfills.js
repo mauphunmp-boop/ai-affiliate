@@ -55,17 +55,27 @@ if (process.env.TEST_DIAG === '1') {
     const _ct = globalThis.clearTimeout;
     const _ci = globalThis.clearInterval;
     const capture = () => new Error().stack?.split('\n').slice(2,9).join('\n');
-    globalThis.setTimeout = function(...args){
-      const id = _st(...args);
-      globalThis.__TIMER_TRACER__.timeouts.set(id, capture());
+    globalThis.setTimeout = function(fn, delay, ...rest){
+      // Ghi lại stack tại thời điểm tạo timeout
+      const stack = capture();
+      let wrapped = fn;
+      if (typeof fn === 'function') {
+        wrapped = (...a) => {
+          try { return fn(...a); }
+          finally { globalThis.__TIMER_TRACER__.timeouts.delete(id); }
+        };
+      }
+      let id = _st(wrapped, delay, ...rest);
+      globalThis.__TIMER_TRACER__.timeouts.set(id, stack);
       return id;
     };
-    globalThis.setInterval = function(...args){
-      const id = _si(...args);
-      globalThis.__TIMER_TRACER__.intervals.set(id, capture());
+    globalThis.setInterval = function(fn, delay, ...rest){
+      const stack = capture();
+      const id = _si(fn, delay, ...rest);
+      globalThis.__TIMER_TRACER__.intervals.set(id, stack);
       return id;
     };
-    globalThis.clearTimeout = function(id){ globalThis.__TIMER_TRACER__.timeouts.delete(id); return _ct(id); };
+  globalThis.clearTimeout = function(id){ if(id!=null) globalThis.__TIMER_TRACER__.timeouts.delete(id); return _ct(id); };
     globalThis.clearInterval = function(id){ globalThis.__TIMER_TRACER__.intervals.delete(id); return _ci(id); };
   }
   process.on('unhandledRejection', r => {
@@ -92,7 +102,22 @@ if (process.env.TEST_DIAG === '1') {
       log('dump error', e);
     }
   };
-  const iv = setInterval(dump, 5000);
-  iv.unref?.();
-  process.on('beforeExit', () => { log('beforeExit dump'); dump(); });
+  // Luôn dùng cơ chế timeout lặp unref để tránh giữ event loop mở.
+  let __diagTimeoutId;
+  const loop = () => {
+    dump();
+    if (!globalThis.__STOP_DIAG__) {
+      __diagTimeoutId = setTimeout(loop, 5000);
+      __diagTimeoutId.unref?.();
+    }
+  };
+  __diagTimeoutId = setTimeout(loop, 2000);
+  __diagTimeoutId.unref?.();
+  const stopDiag = (phase) => {
+    globalThis.__STOP_DIAG__ = true;
+    if (__diagTimeoutId) { clearTimeout(__diagTimeoutId); }
+    log(`diag stopped (${phase})`);
+  };
+  process.on('beforeExit', () => { log('beforeExit dump'); dump(); stopDiag('beforeExit'); });
+  process.on('exit', (code) => { stopDiag('exit:'+code); });
 }

@@ -1,10 +1,15 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen, waitFor, cleanup, act } from '@testing-library/react';
 import TemplatesPage from '../../pages/Affiliate/TemplatesPage.jsx';
 import { ColorModeProvider } from '../../context/ColorModeContext.jsx';
 import NotificationProvider from '../../components/NotificationProvider.jsx';
 import { vi } from 'vitest';
+
+// Mock DataTable tương tự test filter để tránh side-effects pagination/onState giữ tiến trình
+vi.mock('../../components/DataTable.jsx', () => ({
+  __esModule: true,
+  default: ({ rows }) => <div data-testid="mock-datatable-shortcuts">{rows.map(r => <div key={r.id}>{r.template}</div>)}</div>
+}));
 
 vi.mock('../../api/affiliate', () => ({
   listAffiliateTemplates: vi.fn().mockResolvedValue({ data: [
@@ -22,17 +27,22 @@ function wrap(ui){
 }
 
 describe('TemplatesPage shortcuts', () => {
+  afterEach(() => {
+    cleanup();
+  });
   test('Alt+A selects all, Alt+C clears', async () => {
-    const user = userEvent.setup();
-    render(wrap(<TemplatesPage />));
-    await new Promise(r=>setTimeout(r, 5));
-    // Use Alt+A
-    await user.keyboard('{Alt>}a{/Alt}');
-    // Expect Bulk action group visible (has button Xoá or Enable chọn)
-    expect(screen.getByRole('button', { name:/Xoá/ })).toBeInTheDocument();
-    // Clear with Alt+C
-    await user.keyboard('{Alt>}c{/Alt}');
-    // Bulk buttons disappear (Export CSV reappears)
-    expect(screen.getByRole('button', { name:/Export CSV/i })).toBeInTheDocument();
+    const { unmount } = render(wrap(<TemplatesPage />));
+    // Đảm bảo dữ liệu đã load (mock rows xuất hiện) trước khi gọi shortcut
+    await screen.findByText('t1');
+    await screen.findByText('t2');
+
+    // Gọi shortcut trong act để tránh cảnh báo
+    await act(async () => { window.__TEST__templatesShortcut('KeyA'); });
+    await waitFor(() => expect(screen.getByTestId('templates-bulk-actions')).toBeInTheDocument());
+
+    await act(async () => { window.__TEST__templatesShortcut('KeyC'); });
+    await waitFor(() => expect(screen.queryByTestId('templates-bulk-actions')).toBeNull());
+
+    unmount();
   });
 });

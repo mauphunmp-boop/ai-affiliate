@@ -13,7 +13,11 @@ export default function CacheStatsPanel() {
   const refresh = useCallback(()=> setStats(getApiCacheStats()), []);
 
   useEffect(()=> {
-    const id = setInterval(refresh, 2000); // poll nhẹ
+    if (import.meta.env?.TEST) {
+      // Bỏ poll trong test để tránh giữ event loop; test vẫn có thể gọi nút refresh thủ công nếu cần
+      return;
+    }
+    const id = setInterval(refresh, 2000); // poll nhẹ ngoài test
     return ()=> clearInterval(id);
   }, [refresh]);
 

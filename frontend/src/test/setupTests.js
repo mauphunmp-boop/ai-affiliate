@@ -105,15 +105,52 @@ if (!globalThis.__TEST_TIMER_IDS__) {
   };
   globalThis.setInterval = (...args) => {
     const id = _setInterval(...args);
+    // Tránh giữ event loop sống sau khi test hoàn tất: unref nếu có.
+    if (id && typeof id.unref === 'function') {
+      id.unref();
+    }
     globalThis.__TEST_TIMER_IDS__.intervals.add(id);
     return id;
   };
   globalThis.clearTimeout = (id) => { globalThis.__TEST_TIMER_IDS__.timeouts.delete(id); return _clearTimeout(id); };
   globalThis.clearInterval = (id) => { globalThis.__TEST_TIMER_IDS__.intervals.delete(id); return _clearInterval(id); };
-  afterAll(() => {
+  // Dọn timer sau mỗi test file để tránh tích luỹ
+  afterEach(() => {
     for (const id of globalThis.__TEST_TIMER_IDS__.timeouts) _clearTimeout(id);
     for (const id of globalThis.__TEST_TIMER_IDS__.intervals) _clearInterval(id);
     globalThis.__TEST_TIMER_IDS__.timeouts.clear();
     globalThis.__TEST_TIMER_IDS__.intervals.clear();
+  });
+}
+
+// Lightweight beforeExit diagnostics (không bật mặc định trừ khi TEST_DIAG=1)
+if (process.env.TEST_DIAG === '1' && !globalThis.__TEST_BEFORE_EXIT__) {
+  globalThis.__TEST_BEFORE_EXIT__ = true;
+  process.on('beforeExit', () => {
+    const handles = (process._getActiveHandles?.()||[]).map(h=>h?.constructor?.name||'Unknown');
+    const reqs = (process._getActiveRequests?.()||[]).map(r=>r?.constructor?.name||'Unknown');
+    console.log('[BEFORE_EXIT] handles=', handles, 'requests=', reqs, 'pendingTimeouts=', globalThis.__TEST_TIMER_IDS__?.timeouts.size);
+  });
+}
+
+// --- Track window event listeners & auto cleanup (đặc biệt keydown) tránh giữ handle ---
+if (typeof window !== 'undefined' && !window.__LISTENER_TRACKED__) {
+  window.__LISTENER_TRACKED__ = true;
+  const _add = window.addEventListener;
+  const _remove = window.removeEventListener;
+  window.__TEST_LISTENERS__ = [];
+  window.addEventListener = function(type, listener, options){
+    window.__TEST_LISTENERS__.push({ type, listener, options });
+    return _add.call(this, type, listener, options);
+  };
+  window.removeEventListener = function(type, listener, options){
+    window.__TEST_LISTENERS__ = window.__TEST_LISTENERS__.filter(l => !(l.type===type && l.listener===listener));
+    return _remove.call(this, type, listener, options);
+  };
+  afterEach(() => {
+    for (const { type, listener, options } of window.__TEST_LISTENERS__) {
+      try { _remove.call(window, type, listener, options); } catch {}
+    }
+    window.__TEST_LISTENERS__ = [];
   });
 }

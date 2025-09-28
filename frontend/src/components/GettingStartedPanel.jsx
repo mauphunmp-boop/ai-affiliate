@@ -3,6 +3,7 @@ import { Paper, Typography, Stack, Button, List, ListItem, ListItemText } from '
 import { listApiConfigs } from '../api.js';
 import { listAffiliateTemplates } from '../api/affiliate';
 import { useT } from '../i18n/I18nProvider.jsx';
+import { useNavigate } from 'react-router-dom';
 
 /**
  * GettingStartedPanel
@@ -12,6 +13,7 @@ import { useT } from '../i18n/I18nProvider.jsx';
  */
 export default function GettingStartedPanel({ onDismiss }) {
   const { t } = useT();
+  const navigate = useNavigate();
   const tSafe = (key, fallback) => {
     try {
       const v = t(key);
@@ -54,7 +56,7 @@ export default function GettingStartedPanel({ onDismiss }) {
                 primary={tSafe('getting_started_api_config_title','Tạo cấu hình API')}
                 secondary={tSafe('getting_started_api_config_desc','Thêm cấu hình endpoint + API key để gọi dịch vụ AI hoặc proxy.')}
               />
-              <Button size="small" variant="outlined" href="/system/api-configs">{tSafe('getting_started_open','Mở')}</Button>
+              <Button size="small" variant="outlined" onClick={()=>{ navigate('/system/api-configs'); }}>{tSafe('getting_started_open','Mở')}</Button>
             </ListItem>
           )}
           {needTemplates && (
@@ -63,7 +65,7 @@ export default function GettingStartedPanel({ onDismiss }) {
                 primary={tSafe('getting_started_templates_title','Tạo Affiliate Templates')}
                 secondary={tSafe('getting_started_templates_desc','Định nghĩa mẫu chuyển đổi link để công cụ Convert hoạt động tối ưu.')}
               />
-              <Button size="small" variant="outlined" href="/affiliate/templates">{tSafe('getting_started_open','Mở')}</Button>
+              <Button size="small" variant="outlined" onClick={()=>{ navigate('/affiliate/templates'); }}>{tSafe('getting_started_open','Mở')}</Button>
             </ListItem>
           )}
         </List>

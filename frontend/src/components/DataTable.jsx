@@ -12,7 +12,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 // Cấu trúc cột: { key, label, render?: (row)=>node, sx?, headerSx?, sortable?, sortKey? }
 // Các khả năng: sort client, quick filter, column hide, pagination client.
 export default function DataTable({
-  columns,
+  columns: inputColumns,
   rows,
   loading,
   empty = 'Không có dữ liệu',
@@ -52,7 +52,7 @@ export default function DataTable({
   });
   const [filter, setFilter] = React.useState('');
   const [anchor, setAnchor] = React.useState(null);
-  const [sort, setSort] = React.useState(null); // { key, direction }
+  const [sort, setSort] = React.useState(null); // { key, direction } or null
   const [page, setPage] = React.useState(0);
   const [pageSize, setPageSize] = React.useState(() => {
     if (!storagePageSizeKey) return initialPageSize;
@@ -86,7 +86,13 @@ export default function DataTable({
     }
     return entry.matches;
   };
-  const visibleColumns = columns.filter(c => !hidden.includes(c.key) && !isBpHidden(c.key));
+  // Normalise columns: support legacy shape with { field, headerName }
+  const columns = React.useMemo(()=> (inputColumns||[]).map(c => {
+    if (c.key) return c;
+    if (c.field) return { ...c, key: c.field, label: c.headerName || c.label || c.field };
+    return c; // as-is (may break if neither key/field)
+  }), [inputColumns]);
+  const visibleColumns = columns.filter(c => c && c.key && !hidden.includes(c.key) && !isBpHidden(c.key));
   const allSelectableIds = React.useMemo(() => enableSelection ? rows.map(r => r[selectionKey]).filter(v => v != null) : [], [rows, selectionKey, enableSelection]);
   const isAllSelected = enableSelection && allSelectableIds.length > 0 && selection.length === allSelectableIds.length;
   const toggleSelectAll = () => {
@@ -152,7 +158,35 @@ export default function DataTable({
 
   React.useEffect(() => { setPage(0); }, [filter, pageSize, sort, rows]);
   React.useEffect(() => { if (onSelectionChange) onSelectionChange(selection); }, [selection, onSelectionChange]);
-  React.useEffect(() => { if (onState) onState({ processed, visibleColumns, filter, sort, page, pageSize, selection }); }, [processed, visibleColumns, filter, sort, page, pageSize, selection, onState]);
+  // Throttle onState to only fire when shallow changes occur (tránh loop khi parent tạo rows mới mỗi render)
+  const prevOnStateRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!onState) return;
+    const next = { processed, visibleColumns, filter, sort, page, pageSize, selection };
+    const prev = prevOnStateRef.current;
+    let changed = false;
+    if (!prev) changed = true; else {
+      if (prev.filter !== filter || prev.page !== page || prev.pageSize !== pageSize) changed = true;
+      else if ((prev.sort?.key !== sort?.key) || (prev.sort?.direction !== sort?.direction)) changed = true;
+      else if (prev.selection.length !== selection.length) changed = true;
+      else if (prev.visibleColumns.length !== visibleColumns.length) changed = true;
+      else if (prev.processed.length !== processed.length) changed = true;
+    }
+    if (changed) {
+      // store shallow snapshot (copy arrays where needed to prevent mutation surprises)
+      prevOnStateRef.current = {
+        filter,
+        page,
+        pageSize,
+        sort: sort ? { ...sort } : null,
+        selection: [...selection],
+        visibleColumns: [...visibleColumns],
+        processedLength: processed.length,
+        processed // keep reference only for length comparison next time
+      };
+      onState(next);
+    }
+  }, [processed, visibleColumns, filter, sort, page, pageSize, selection, onState]);
 
   // useT is always defined (imported), call unconditionally to satisfy React Hooks rules
   const { t } = useT();
@@ -318,11 +352,11 @@ export default function DataTable({
                     </TableCell>
                   )}
                   {visibleColumns.map(c => {
-                    const active = sort?.key === c.key;
+                    const active = !!sort && sort.key === c.key;
                     return (
-                      <TableCell key={c.key} sx={c.headerSx || c.sx} sortDirection={active ? sort.direction : false}>
+                      <TableCell key={c.key} sx={c.headerSx || c.sx} sortDirection={active ? (sort && sort.direction) : false}>
                         {c.sortable ? (
-                          <TableSortLabel active={active} direction={active ? sort.direction : 'asc'} onClick={() => handleSort(c)}>
+                          <TableSortLabel active={active} direction={active ? (sort && sort.direction) : 'asc'} onClick={() => handleSort(c)}>
                             {c.label}
                           </TableSortLabel>
                         ) : c.label }
@@ -391,7 +425,7 @@ export default function DataTable({
         </Box>
       )}
   <Menu open={!!anchor} onClose={()=>setAnchor(null)} anchorEl={anchor}>
-        {columns.map(c => (
+        {columns.map(c => c && c.key && (
           <MenuItem key={c.key} dense onClick={()=>{ toggleHide(c.key); setAnchor(null); }}>
             <Checkbox size="small" checked={!hidden.includes(c.key)} />
             <ListItemText primaryTypographyProps={{ variant:'body2' }}>{c.label}</ListItemText>

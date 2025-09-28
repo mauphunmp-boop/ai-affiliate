@@ -40,7 +40,7 @@ export default function HealthPage() {
       {data && (
         <Box>
           <Grid container spacing={2}>
-            <Grid item xs={12} md={6} lg={4}>
+            <Grid size={{ xs:12, md:6, lg:4 }}>
               <Paper variant="outlined" sx={{ p:1.5 }}>
                 <Typography variant="subtitle2" gutterBottom>{t('health_db')}</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap">
@@ -50,7 +50,7 @@ export default function HealthPage() {
                 </Stack>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6} lg={4}>
+            <Grid size={{ xs:12, md:6, lg:4 }}>
               <Paper variant="outlined" sx={{ p:1.5 }}>
                 <Typography variant="subtitle2" gutterBottom>{t('health_migrations')}</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap">
@@ -60,7 +60,7 @@ export default function HealthPage() {
                 </Stack>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6} lg={4}>
+            <Grid size={{ xs:12, md:6, lg:4 }}>
               <Paper variant="outlined" sx={{ p:1.5 }}>
                 <Typography variant="subtitle2" gutterBottom>{t('health_counts')}</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap">
@@ -68,7 +68,7 @@ export default function HealthPage() {
                 </Stack>
               </Paper>
             </Grid>
-            <Grid item xs={12} md={6} lg={4}>
+            <Grid size={{ xs:12, md:6, lg:4 }}>
               <Paper variant="outlined" sx={{ p:1.5 }}>
                 <Typography variant="subtitle2" gutterBottom>{t('health_env')}</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap">

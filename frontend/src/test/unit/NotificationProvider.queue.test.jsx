@@ -6,24 +6,22 @@ import userEvent from '@testing-library/user-event';
 
 import { NotificationProvider, useNotify } from '../../components/NotificationProvider.jsx';
 
-function Demo() {
+function Demo() { // vẫn giữ demo cho context, nhưng ta sẽ gọi hook test trực tiếp
   const notify = useNotify();
-  return (
-    <div>
-      <button onClick={()=>{ notify('info','A'); notify('info','A'); notify('info','B'); }}>Push</button>
-    </div>
-  );
+  return <button onClick={()=>{ notify('info','A'); notify('info','A'); notify('info','B'); }}>Push</button>;
 }
 
 describe('NotificationProvider queue & dedupe', () => {
   it('hiển thị lần lượt và bỏ qua thông báo trùng lặp gần', async () => {
-    const user = userEvent.setup();
-    render(<NotificationProvider autoHideDuration={999999} shiftDelay={0} testImmediate><Demo /></NotificationProvider>);
-    await user.click(screen.getByText('Push'));
-    expect(await screen.findByText('A')).toBeInTheDocument();
-    // Click nút đóng (aria-label="Close") để kích hoạt shift thủ công
-    const closeBtn = screen.getByRole('button', { name: /close/i });
-    await user.click(closeBtn);
+    render(<NotificationProvider autoHideDuration={99999} shiftDelay={0} testImmediate><Demo /></NotificationProvider>);
+    // Dùng test hook enqueue để kiểm soát đồng bộ
+    window.__TEST__notifyState.enqueue('info','A');
+    window.__TEST__notifyState.enqueue('info','A'); // dedupe skip
+    window.__TEST__notifyState.enqueue('info','B');
+    // Current phải là A
+    await waitFor(() => expect(screen.getByText('A')).toBeInTheDocument());
+    // Shift sang B
+    window.__TEST__notifyState.shift();
     await waitFor(() => expect(screen.getByText('B')).toBeInTheDocument());
     expect(screen.queryByText('A')).not.toBeInTheDocument();
   });

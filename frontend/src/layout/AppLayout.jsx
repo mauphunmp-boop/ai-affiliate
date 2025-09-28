@@ -1,5 +1,5 @@
 import React from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useLocation } from 'react-router-dom';
 // Consolidated MUI imports (removed duplicated import block that caused identifier redeclarations)
 import { AppBar, Toolbar, Typography, IconButton, Box, Drawer, List, ListItem, ListItemButton, ListItemText, useMediaQuery, Tooltip, Divider, Select, MenuItem } from '@mui/material';
 import GettingStartedPanel from '../components/GettingStartedPanel.jsx';
@@ -37,6 +37,9 @@ export default function AppLayout() {
   const isMobile = useMediaQuery(theme => theme.breakpoints.down('sm'));
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const toggleDrawer = () => setMobileOpen(o=>!o);
+  const location = useLocation();
+  // Lightweight debug for route changes (dev only)
+  React.useEffect(()=>{ if (import.meta.env.DEV) { /* eslint-disable no-console */ console.debug('[route-change]', location.pathname); } }, [location]);
 
   const drawerContent = (
     <Box sx={{ height:'100%', display:'flex', flexDirection:'column' }}>
@@ -44,19 +47,25 @@ export default function AppLayout() {
       <Divider />
       <Box sx={{ flex:1, overflow:'auto' }}>
         <List>
-          {navItems.map(item => (
-            <ListItem key={item.to} disablePadding onClick={()=>{ if(isMobile) setMobileOpen(false); }}>
-              <ListItemButton
-                component={NavLink}
-                to={item.to}
-                sx={{ '&.active': { backgroundColor: 'action.selected' } }}
-                onMouseEnter={()=>window.__routePreloaders?.[item.key]?.()}
-                onFocus={()=>window.__routePreloaders?.[item.key]?.()}
-              >
-                <ListItemText primary={item.label} />
-              </ListItemButton>
-            </ListItem>
-          ))}
+          {navItems.map(item => {
+            // Add `end` for base items that are prefixes of other routes to avoid sticky active state (e.g. /offers)
+            const needEnd = item.to === '/offers';
+            return (
+              <ListItem key={item.to} disablePadding onClick={()=>{ if(isMobile) setMobileOpen(false); }}>
+                <ListItemButton
+                  component={NavLink}
+                  to={item.to}
+                  end={needEnd ? true : undefined}
+                  sx={{ '&.active': { backgroundColor: 'action.selected' } }}
+                  onMouseEnter={()=>window.__routePreloaders?.[item.key]?.()}
+                  onFocus={()=>window.__routePreloaders?.[item.key]?.()}
+                  data-nav-item={item.to}
+                >
+                  <ListItemText primary={item.label} />
+                </ListItemButton>
+              </ListItem>
+            );
+          })}
         </List>
       </Box>
       <Box sx={{ p:1, textAlign:'center', typography:'caption', opacity:0.6 }}>v1 UI</Box>

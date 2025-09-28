@@ -33,7 +33,15 @@ export default function LogsViewerPage(){
   }, [file, limit]);
   React.useEffect(()=>{ loadFiles(); }, [loadFiles]);
   React.useEffect(()=>{ loadLines(); }, [loadLines]);
-  React.useEffect(()=>{ if(!auto) return; const id=setInterval(()=>loadLines(), 8000); return ()=>clearInterval(id); }, [auto, loadLines]);
+  React.useEffect(()=>{
+    if(!auto) return;
+    if (import.meta.env?.TEST) {
+      // Trong môi trường test bỏ auto-poll để tránh interval giữ process sống.
+      return;
+    }
+    const id=setInterval(()=>loadLines(), 8000);
+    return ()=>clearInterval(id);
+  }, [auto, loadLines]);
 
   const filtered = React.useMemo(()=>{
     if(!filter.trim()) return lines;

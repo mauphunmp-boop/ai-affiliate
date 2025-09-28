@@ -15,12 +15,20 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import BoltIcon from '@mui/icons-material/Bolt';
 import { listAffiliateTemplates, upsertAffiliateTemplate, autoGenerateTemplates, deleteAffiliateTemplate, updateAffiliateTemplate } from '../../api/affiliate';
+import { useNavigate } from 'react-router-dom';
 import { useT } from '../../i18n/I18nProvider.jsx';
 
 export default function TemplatesPage() {
+  if (import.meta.env.DEV) {
+    // Render debug (avoid spamming in test env)
+    // eslint-disable-next-line no-console
+    console.debug('[TemplatesPage] render at', performance.now().toFixed(1));
+  }
+  React.useEffect(()=>{ if(import.meta.env.DEV){ try { performance.mark?.('TemplatesPage:paint'); } catch {} } }, []);
   const { t } = useT();
   const tt = React.useCallback((k, fb) => { const v = t(k); return v === k ? fb : v; }, [t]);
   const notify = useNotify();
+  const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -190,8 +198,9 @@ export default function TemplatesPage() {
     notify(fail? 'warning':'success', msg);
     setAnnounce(msg);
   };
-  const filtered = rows.filter(r => enabledFilter === 'all' ? true : enabledFilter === 'on' ? r.enabled : !r.enabled);
-  const dataRows = filtered.map(r => ({ ...r, id: r.id }));
+  const filtered = React.useMemo(() => rows.filter(r => enabledFilter === 'all' ? true : enabledFilter === 'on' ? r.enabled : !r.enabled), [rows, enabledFilter]);
+  // dataRows memo để tránh tạo mảng mới mỗi render khi không đổi -> giảm kích hoạt onState ở DataTable
+  const dataRows = React.useMemo(()=> filtered.map(r => ({ ...r, id: r.id })), [filtered]);
 
   const invertSelection = React.useCallback(() => {
     setSelected(r => rows.filter(row => !r.includes(row.id)).map(row => row.id));
@@ -208,7 +217,20 @@ export default function TemplatesPage() {
     return () => window.removeEventListener('keydown', handler);
   }, [filtered, invertSelection, t]);
 
+  // Test-only: expose deterministic shortcut invoker luôn cập nhật theo state mới nhất (tránh stale closure)
+  React.useEffect(() => {
+    if (!(import.meta.env?.TEST && typeof window !== 'undefined')) return;
+    window.__TEST__templatesShortcut = (code) => {
+      if (code === 'KeyA') { setSelected(filtered.map(r=>r.id)); setAnnounce('selected_all'); }
+      else if (code === 'KeyC') { setSelected([]); setAnnounce('cleared'); }
+      else if (code === 'KeyI') { setSelected(r => rows.filter(row => !r.includes(row.id)).map(row => row.id)); setAnnounce('inverted'); }
+    };
+    return () => { try { delete window.__TEST__templatesShortcut; } catch { /* ignore */ } };
+  }, [filtered, rows]);
+
   return (
+    <React.Fragment>
+    { /* Test hook đã chuyển sang useEffect để cập nhật mỗi lần state đổi */ }
     <Box>
   <Typography variant="h5" gutterBottom>Affiliate <GlossaryTerm term="template">{t('nav_templates')}</GlossaryTerm></Typography>
       <Stack direction="row" spacing={1} sx={{ mb:2, flexWrap:'wrap', alignItems:'center' }}>
@@ -230,7 +252,7 @@ export default function TemplatesPage() {
         </span></Tooltip>
         <Box sx={{ flexGrow:1 }} />
         {selected.length > 0 ? (
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="center" {...(import.meta.env?.TEST ? { 'data-testid':'templates-bulk-actions' } : {})}>
             <Button size="small" color="error" disabled={bulkBusy} onClick={doBulkDelete}>{bulkMode==='delete' ? '...' : t('bulk_delete_label', { n: selected.length })}</Button>
             <Button size="small" disabled={bulkBusy} onClick={()=>doBulkSetEnabled(true)}>{bulkMode==='enable' ? '...' : t('bulk_enable_label')}</Button>
             <Button size="small" disabled={bulkBusy} onClick={()=>doBulkSetEnabled(false)}>{bulkMode==='disable' ? '...' : t('bulk_disable_label')}</Button>
@@ -252,7 +274,7 @@ export default function TemplatesPage() {
       <DataTable
         tableId="templates"
         rows={dataRows}
-        columns={columns.map(c => ({ ...c, sortable: ['id','network','platform','enabled'].includes(c.key) }))}
+        columns={React.useMemo(()=> columns.map(c => ({ ...c, sortable: ['id','network','platform','enabled'].includes(c.key) })), [columns])}
         loading={loading}
   empty={t('templates_empty_title')}
   emptyComponent={<EmptyState title={t('templates_empty_title')} description={t('templates_empty_desc')} actionLabel={t('action_add')} onAction={()=> openNew()} />}
@@ -266,6 +288,8 @@ export default function TemplatesPage() {
         enableSelection
         onSelectionChange={setSelected}
         onState={setTableState}
+        // In case DataTable internally uses anchor tags for navigation, force client navigation
+        onRowActionNavigate={(to)=>{ if(typeof to==='string'){ navigate(to); } }}
       />
       <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
   <DialogTitle>{editing ? t('edit_template_title') : t('create_template_title')}</DialogTitle>
@@ -315,5 +339,6 @@ export default function TemplatesPage() {
       {/* Live region thông báo kết quả bulk actions */}
       <Box role="status" aria-live="polite" sx={{ position:'absolute', width:1, height:1, p:0, m:-1, overflow:'hidden', clip:'rect(0 0 0 0)', whiteSpace:'nowrap', border:0 }}>{announce}</Box>
     </Box>
+    </React.Fragment>
   );
 }

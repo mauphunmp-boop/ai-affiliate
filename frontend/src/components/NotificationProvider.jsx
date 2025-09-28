@@ -60,20 +60,37 @@ export function NotificationProvider({ children, autoHideDuration = 4200, maxQue
     });
   }, [maxQueue]);
 
+  // Test hook: cho phép test queue quan sát nhanh mà không phụ thuộc vào animation Snackbar
+  React.useEffect(() => {
+    if (!(typeof window !== 'undefined' && import.meta.env?.TEST)) return;
+    window.__TEST__notifyState = {
+      get current() { return current; },
+      get queue() { return queue; },
+      shift,
+      enqueue
+    };
+    return () => { try { delete window.__TEST__notifyState; } catch {} };
+  }, [current, queue, shift, enqueue]);
+
+  // Ở môi trường test ta muốn giới hạn tối đa timer treo: nếu TEST và !testImmediate thì cưỡng bức autoHideDuration rất nhỏ.
+  const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.TEST;
+  const effectiveAutoHide = isTestEnv ? Math.min(50, autoHideDuration) : autoHideDuration;
+  const effectiveShiftDelay = isTestEnv ? 0 : shiftDelay;
+
   return (
     <NotificationContext.Provider value={{ enqueue }}>
       {children}
-      <Snackbar
-        open={!!current}
-        key={current?.id}
-        autoHideDuration={autoHideDuration}
+  <Snackbar
+    open={!!current}
+    key={current?.id}
+    autoHideDuration={effectiveAutoHide}
         onClose={(_, r) => {
           if (r === 'clickaway') return;
             setCurrent(null);
             if (testImmediate) {
               shift();
             } else {
-              setTimeout(shift, shiftDelay);
+              setTimeout(shift, effectiveShiftDelay);
             }
         }}
         // MUI v6 đôi khi không chuyển prop onExited trong môi trường test → dùng fallback timeout ở onClose

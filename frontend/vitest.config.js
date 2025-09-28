@@ -23,12 +23,14 @@ export default defineConfig({
     maxThreads: 4,
     minThreads: 1,
     isolate: true,
-    // Coverage tắt tạm; xem chú thích cũ.
-    // coverage: {
-    //   reporter: ['text','lcov'],
-    //   include: ['src/**/*.{js,jsx}'],
-    //   exclude: ['src/test/**','src/**/*.d.ts'],
-    //   thresholds: { lines: 55, statements: 55, branches: 40, functions: 50 }
-    // }
+    // Bật coverage để lấy baseline. Thresholds sẽ thêm ở bước sau (todo riêng) để tránh fail sớm.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text','lcov'],
+      include: ['src/**/*.{js,jsx}'],
+      exclude: ['src/test/**','src/**/*.d.ts'],
+      // Chưa đặt thresholds ở baseline; sẽ cấu hình trong bước thiết lập ngưỡng.
+      reportsDirectory: './coverage'
+    }
   }
 });
