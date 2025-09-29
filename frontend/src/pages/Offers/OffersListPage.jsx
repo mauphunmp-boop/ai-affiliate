@@ -3,7 +3,7 @@ import { Typography, Paper, Box, TextField, MenuItem, IconButton, Button, Toolti
 import EmptyState from '../../components/EmptyState.jsx';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import { listOffers, getOfferExtras } from '../../api/offers';
+import { listOffers, getOfferExtras, getHealthFull } from '../../api/offers';
 import useApiCache from '../../hooks/useApiCache.js';
 import DataTable from '../../components/DataTable.jsx';
 import usePersistedState from '../../hooks/usePersistedState.js';
@@ -20,6 +20,8 @@ export default function OffersListPage() {
   const [skip, setSkip] = usePersistedState('offers_skip', 0);
   const [limit, setLimit] = usePersistedState('offers_limit', 20);
   const [pageSizeInput, setPageSizeInput] = useState(String(limit));
+  const [totalCount, setTotalCount] = useState(null); // tổng số offer trong toàn DB (unfiltered)
+  const [totalLoading, setTotalLoading] = useState(false);
   const debounceRef = useRef(null);
   const lastFetchKeyRef = useRef(null); // dùng để tránh double fetch cùng tham số
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -48,6 +50,22 @@ export default function OffersListPage() {
   }, [refreshOffers]);
   const fetchData = useCallback(()=> scheduleRefresh(), [scheduleRefresh]);
   const loading = cacheLoading;
+
+  // Fetch global total (debounced lightly) — separate from paginated list
+  const fetchTotal = useCallback(async () => {
+    try {
+      setTotalLoading(true);
+      const r = await getHealthFull();
+      const val = r?.data?.counts?.offers;
+      if (typeof val === 'number') setTotalCount(val);
+    } catch (e) {
+      // ignore silently; giữ nguyên totalCount cũ
+    } finally {
+      setTotalLoading(false);
+    }
+  }, []);
+
+  useEffect(()=>{ fetchTotal(); }, [fetchTotal]);
 
   const onSearchEnter = (e) => { if (e.key === 'Enter') { setSkip(0); fetchData(); } };
 
@@ -130,6 +148,12 @@ export default function OffersListPage() {
           <Button startIcon={<RefreshIcon />} onClick={()=>{ setSkip(0); fetchData(); }} disabled={loading}>{t('action_refresh') || 'Làm mới'}</Button>
           <Box sx={{ flexGrow:1 }} />
           <Chip size="small" label={`Offset ${skip}`} />
+          <Box sx={{ display:'flex', alignItems:'center', gap:0.5, px:1, py:0.4, border:'1px solid', borderColor:'divider', borderRadius:1, minHeight:32 }}>
+            <Typography variant="caption" sx={{ fontWeight:500 }}>{t('table_total')||'Tổng'} DB:</Typography>
+            <Typography variant="caption" data-testid="offers-db-total">
+              {totalLoading && totalCount==null ? '…' : (totalCount!=null ? totalCount : '—')}
+            </Typography>
+          </Box>
         </Stack>
       </Paper>
       <DataTable
@@ -145,7 +169,7 @@ export default function OffersListPage() {
         enablePagination
         initialPageSize={limit}
         onRefresh={()=>{ setSkip(0); fetchData(); }}
-        toolbarExtras={<Typography variant="caption" color="text.secondary">{t('table_total', { total: rows.length })}</Typography>}
+  toolbarExtras={<Typography variant="caption" color="text.secondary">{t('table_total', { total: rows.length })}{totalCount!=null && ` / DB: ${totalCount}`}</Typography>}
         responsiveHiddenBreakpoints={{ price:'sm', source_type:'sm' }}
         responsiveCards
         cardTitleKey="title"

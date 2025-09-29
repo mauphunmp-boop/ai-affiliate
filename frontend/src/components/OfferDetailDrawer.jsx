@@ -27,7 +27,7 @@ export default function OfferDetailDrawer({ open, onClose, offer }) {
   }, [open, offer]);
 
   return (
-    <Drawer anchor="right" open={open} onClose={onClose} sx={{ '& .MuiDrawer-paper': { width:{ xs:'100%', sm:420 }, p:2 } }}>
+    <Drawer anchor="right" open={open} onClose={onClose} sx={{ '& .MuiDrawer-paper': { width:{ xs:'100%', sm:440 }, p:2, pt:2.5 } }}>
       <Stack spacing={1} sx={{ height:'100%' }}>
         <Typography variant="h6" gutterBottom>{t('offers_detail_title') || 'Chi tiết Offer'}</Typography>
         {loading && (
@@ -38,8 +38,8 @@ export default function OfferDetailDrawer({ open, onClose, offer }) {
         {!loading && !detail && <Typography variant="body2" color="text.secondary">{t('offers_detail_loading')||'Đang tải...'}</Typography>}
         {!loading && detail && detail.error && <Typography color="error" variant="body2">{detail.error}</Typography>}
         {!loading && detail && !detail.error && (
-          <Box sx={{ overflowY:'auto', pr:1 }}>
-            <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb:1 }}>
+          <Box sx={{ overflowY:'auto', pr:1, pt:0.5, pb:2 }}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb:1, maxWidth:'100%' }}>
               <Chip label={`ID: ${detail.offer.id}`} size="small" />
               {detail.offer.merchant && <Chip label={detail.offer.merchant} size="small" />}
               {detail.offer.price && <Chip label={`${detail.offer.price} ${detail.offer.currency||''}`} size="small" />}
@@ -48,8 +48,8 @@ export default function OfferDetailDrawer({ open, onClose, offer }) {
               {detail.offer.eligible_commission && <Chip color="success" label={t('offers_detail_commission_eligible')||'Eligible'} size="small" />}
               {detail.offer.affiliate_link_available && <Chip color="primary" label={t('offers_detail_affiliate_link_available')||'Aff link'} size="small" />}
             </Stack>
-            <Typography variant="subtitle2" sx={{ fontWeight:600 }}>{detail.offer.title}</Typography>
-            <Typography variant="body2" sx={{ mb:1, wordBreak:'break-word' }}>{detail.offer.desc || detail.offer.url}</Typography>
+            <Typography variant="subtitle2" sx={{ fontWeight:600, pr:0.5, wordBreak:'break-word', whiteSpace:'normal' }}>{detail.offer.title}</Typography>
+            <Typography variant="body2" sx={{ mb:1, wordBreak:'break-word', whiteSpace:'pre-wrap' }}>{detail.offer.desc || detail.offer.url}</Typography>
             {detail.offer.affiliate_url && <Button size="small" variant="outlined" component="a" href={detail.offer.affiliate_url} target="_blank" rel="noreferrer">Affiliate</Button>}
             <Button size="small" sx={{ ml:1 }} variant="text" component="a" href={detail.offer.url} target="_blank" rel="noreferrer">URL</Button>
             <Divider sx={{ my:1.5 }} />
