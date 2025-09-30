@@ -1,0 +1,10 @@
+name: testing-checklist
+description: Checklist test chuẩn sau mỗi thay đổi
+content: |
+  1. Unit test: pytest -q (all green).
+  2. Lint & format: black . --check, ruff ., eslint . (pass).
+  3. Integration: docker-compose up → /health 200.
+  4. Manual: 
+      * Tạo 1 product qua API.
+      * Gọi /ai/suggest → kết quả hợp lệ.
+  5. Rollback nếu fail: git checkout -- <file> hoặc docker-compose down --rmi local.
