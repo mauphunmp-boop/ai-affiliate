@@ -12,6 +12,15 @@ export default defineConfig(() => {
     ].filter(Boolean),
     build: {
       sourcemap: enableAnalyze,
+    },
+    server: {
+      host: '0.0.0.0',          // listen on all interfaces so cloudflared can reach it
+      port: 5173,
+      strictPort: true,
+      // Vite v5+ supports allowedHosts (or use allowedHosts plugin in older versions)
+      // This authorizes the tunnel-accessed hostname to avoid the blocked request message.
+      allowedHosts: ['admin.tuvanmuasam.app'],
+      // Optional: if you later add apex chat UI served by a separate Vite instance, extend this list.
     }
   }
 })

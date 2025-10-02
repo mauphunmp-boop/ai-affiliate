@@ -1,0 +1,38 @@
+# Sample Cloudflare Tunnel configuration for the AI Affiliate project.
+# Copy this file to one of the supported locations (prefer project root or %USERPROFILE%/.cloudflared/config.yml)
+# and adjust the credentials-file path + tunnel UUID accordingly.
+
+# Name of the existing tunnel (created with `cloudflared tunnel create core-backend`).
+tunnel: core-backend
+
+# Path to the credentials JSON produced during tunnel creation.
+# On Windows this often lives under: C:\Users\<USER>\.cloudflared\<UUID>.json
+credentials-file: C:\\Users\\<USER>\\.cloudflared\\<UUID>.json
+
+# Ingress rules: order matters. First match wins.
+ingress:
+  # Admin React dev server (adjust port if Vite config changes)
+  - hostname: admin.tuvanmuasam.app
+    service: http://localhost:5173
+
+  # Backend API (FastAPI / Uvicorn)
+  - hostname: api.tuvanmuasam.app
+    service: http://localhost:8000
+
+  # Apex domain serves landing + chat UI (FastAPI until dedicated frontend build)
+  - hostname: tuvanmuasam.app
+    service: http://localhost:8000
+
+  # Catch-all: return 404 for anything else
+  - service: http_status:404
+
+# Optional performance / connection tuning (uncomment & adjust as needed)
+# warp-routing:
+#   enabled: true
+# originRequest:
+#   connectTimeout: 10s
+#   tcpKeepAlive: 30s
+#   noTLSVerify: false
+
+# Optional: Log level (info|warn|error|debug)
+# loglevel: info

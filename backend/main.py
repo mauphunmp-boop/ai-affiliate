@@ -241,6 +241,84 @@ def health_full(db: Session = Depends(get_db)):
     }
     return payload
 
+# ---------------- Landing & Admin Placeholder (tạm thời) ----------------
+# Mục đích: tránh 404 khi truy cập vào apex domain hoặc admin subdomain trước khi build frontend.
+# Sau này khi có build Vite, có thể thay cơ chế này bằng phục vụ file tĩnh hoặc multi-page.
+try:
+        from fastapi.responses import HTMLResponse
+except Exception:  # đã import ở trên nhưng phòng trường hợp refactor
+        pass
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang=\"vi\">
+<head>
+    <meta charset=\"UTF-8\" />
+    <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />
+    <title>AI Affiliate – Landing</title>
+    <style>
+        body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:40px;line-height:1.45;background:#111;color:#eee}
+        a{color:#4dabf7;text-decoration:none}a:hover{text-decoration:underline}
+        .wrap{max-width:760px;margin:auto}
+        h1{font-size:1.9rem;margin-top:0}
+        code{background:#222;padding:2px 6px;border-radius:4px;font-size:.9em}
+        .cards{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin-top:28px}
+        .card{background:#1c1c1c;border:1px solid #2c2c2c;padding:14px 16px;border-radius:8px}
+        .badge{background:#2b5;font-size:.65rem;padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
+    </style>
+</head>
+<body>
+<div class=\"wrap\">
+    <h1>AI Affiliate API <span class=\"badge\">preview</span></h1>
+    <p>Backend đang chạy. Đây là trang tạm thời. Bạn có thể:</p>
+    <ul>
+        <li>Kiểm tra API docs: <a href=\"/docs\">/docs</a></li>
+        <li>Health check: <a href=\"/health\">/health</a></li>
+        <li>Admin dashboard (đang phát triển): <a href=\"/admin\">/admin</a></li>
+    </ul>
+    <p>Triển khai frontend production sau: build Vite rồi mount static (xem ghi chú trong code).</p>
+    <div class=\"cards\">
+        <div class=\"card\"><strong>Gợi ý AI</strong><br/><code>POST /ai/suggest?query=...</code></div>
+        <div class=\"card\"><strong>Offers</strong><br/><code>GET /offers</code></div>
+        <div class=\"card\"><strong>Shortlink</strong><br/><code>POST /aff/convert</code></div>
+    </div>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/", include_in_schema=False)
+def landing_page(request: Request):  # type: ignore
+    """Root behavior varies by Host header.
+
+    Option A (selected): If the request host matches an API host (default: api.tuvanmuasam.app),
+    issue an HTTP redirect (307) to /docs so that the API documentation is directly accessible at the
+    bare root of the api subdomain without requiring users to manually append /docs.
+
+    Otherwise (apex/chat or any other host), return the landing (future: Chat UI shell / hydrated SPA).
+
+    Configuration:
+    - Set env API_ROOT_HOSTS to a comma-separated list of hostnames that should redirect (e.g. "api.tuvanmuasam.app,api.example.com").
+    - If unset, defaults to ["api.tuvanmuasam.app"].
+    """
+    host_header = request.headers.get("host", "").split(":")[0].lower()
+    api_hosts = [h.strip().lower() for h in os.getenv("API_ROOT_HOSTS", "api.tuvanmuasam.app").split(",") if h.strip()]
+    if host_header in api_hosts:
+        # 307 preserves method if someone POSTs accidentally to root; 302 would also work.
+        return RedirectResponse(url="/docs", status_code=307)
+    return HTMLResponse(LANDING_HTML)
+
+# /admin placeholder removed – admin UI served via admin.tuvanmuasam.app (Vite dev / future build)
+
+# Optional: nếu đã build frontend và đặt biến FRONTEND_DIST trỏ tới thư mục dist, mount static assets.
+_dist_dir = os.getenv("FRONTEND_DIST")
+if _dist_dir and os.path.isdir(_dist_dir):
+        try:
+                from fastapi.staticfiles import StaticFiles
+                app.mount("/static", StaticFiles(directory=_dist_dir, html=False), name="static")
+                logger.info("Mounted static assets from %s", _dist_dir)
+        except Exception as e:  # không làm hỏng app nếu lỗi
+                logger.warning("Không mount static: %s", e)
+
 # =====================================================================
 #                       AFFILIATE — SAFE SHORTLINK
 # =====================================================================
