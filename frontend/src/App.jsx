@@ -97,7 +97,7 @@ export default function App() {
   };
 
   return (
-    <Container sx={{ mt: 4 }}>
+  <Container sx={{ mt: 4, maxWidth: 'lg' }}>
       <Typography variant="h4" gutterBottom>
         {t('links_title')}
       </Typography>

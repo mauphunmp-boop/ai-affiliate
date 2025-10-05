@@ -7,7 +7,11 @@ tunnel: core-backend
 
 # Path to the credentials JSON produced during tunnel creation.
 # On Windows this often lives under: C:\Users\<USER>\.cloudflared\<UUID>.json
-credentials-file: C:\\Users\\<USER>\\.cloudflared\\<UUID>.json
+# Path to the credentials JSON produced during tunnel creation.
+# On Linux this is often /etc/cloudflared/<UUID>.json when created as root
+# or ~/.cloudflared/<UUID>.json for a regular user.
+# If you run with a TUNNEL_TOKEN env (recommended for headless servers), you can omit credentials-file.
+# credentials-file: /etc/cloudflared/<UUID>.json
 
 # Ingress rules: order matters. First match wins.
 ingress:

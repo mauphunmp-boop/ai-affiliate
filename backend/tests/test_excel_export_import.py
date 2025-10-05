@@ -3,7 +3,9 @@ import os
 import sys
 import pytest
 
-fastapi = pytest.importorskip("fastapi", reason="FastAPI not installed in this test environment")
+fastapi = pytest.importorskip(
+    "fastapi", reason="FastAPI not installed in this test environment"
+)
 from fastapi.testclient import TestClient
 
 # Force SQLite and AT mock
@@ -16,11 +18,16 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 from database import Base
 import crud, schemas, models
+
 try:
     import pandas as pd  # type: ignore
 except Exception:  # fallback đơn giản: skip toàn bộ file test nếu không có pandas
     import pytest
-    pytest.skip("Bỏ qua test_excel_export_import vì thiếu pandas (không build được trên môi trường hiện tại)", allow_module_level=True)
+
+    pytest.skip(
+        "Bỏ qua test_excel_export_import vì thiếu pandas (không build được trên môi trường hiện tại)",
+        allow_module_level=True,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -48,42 +55,108 @@ def client():
 
 def _seed_minimal_data(db):
     # Seed campaign APPROVED
-    crud.upsert_campaign(db, schemas.CampaignCreate(
-        campaign_id="CAMP_OK",
-        merchant="tikivn",
-        name="Tiki",
-        status="running",
-        user_registration_status="APPROVED",
-    ))
+    crud.upsert_campaign(
+        db,
+        schemas.CampaignCreate(
+            campaign_id="CAMP_OK",
+            merchant="tikivn",
+            name="Tiki",
+            status="running",
+            user_registration_status="APPROVED",
+        ),
+    )
     # Seed promotions offer and manual offer
-    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-        source="accesstrade", source_id="p1", merchant="tikivn", title="SP DF",
-        url="https://tiki.vn/1", affiliate_url=None, image_url=None, price=100000, currency="VND",
-        campaign_id="CAMP_OK", source_type="datafeeds", extra=None
-    ))
-    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-        source="accesstrade", source_id="p2", merchant="tikivn", title="SP TOP",
-        url="https://tiki.vn/2", affiliate_url=None, image_url=None, price=200000, currency="VND",
-        campaign_id="CAMP_OK", source_type="top_products", extra=None
-    ))
-    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-        source="excel", source_id="p4", merchant="tikivn", title="SP EXCEL",
-        url="https://tiki.vn/4", affiliate_url=None, image_url=None, price=400000, currency="VND",
-        campaign_id="CAMP_OK", source_type="excel", extra=None
-    ))
-    crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-        source="manual", source_id="p5", merchant="tikivn", title="SP MANUAL",
-        url="https://tiki.vn/5", affiliate_url=None, image_url=None, price=500000, currency="VND",
-        campaign_id="CAMP_OK", source_type="manual", extra=None
-    ))
+    crud.upsert_offer_by_source(
+        db,
+        schemas.ProductOfferCreate(
+            source="accesstrade",
+            source_id="p1",
+            merchant="tikivn",
+            title="SP DF",
+            url="https://tiki.vn/1",
+            affiliate_url=None,
+            image_url=None,
+            price=100000,
+            currency="VND",
+            campaign_id="CAMP_OK",
+            source_type="datafeeds",
+            extra=None,
+        ),
+    )
+    crud.upsert_offer_by_source(
+        db,
+        schemas.ProductOfferCreate(
+            source="accesstrade",
+            source_id="p2",
+            merchant="tikivn",
+            title="SP TOP",
+            url="https://tiki.vn/2",
+            affiliate_url=None,
+            image_url=None,
+            price=200000,
+            currency="VND",
+            campaign_id="CAMP_OK",
+            source_type="top_products",
+            extra=None,
+        ),
+    )
+    crud.upsert_offer_by_source(
+        db,
+        schemas.ProductOfferCreate(
+            source="excel",
+            source_id="p4",
+            merchant="tikivn",
+            title="SP EXCEL",
+            url="https://tiki.vn/4",
+            affiliate_url=None,
+            image_url=None,
+            price=400000,
+            currency="VND",
+            campaign_id="CAMP_OK",
+            source_type="excel",
+            extra=None,
+        ),
+    )
+    crud.upsert_offer_by_source(
+        db,
+        schemas.ProductOfferCreate(
+            source="manual",
+            source_id="p5",
+            merchant="tikivn",
+            title="SP MANUAL",
+            url="https://tiki.vn/5",
+            affiliate_url=None,
+            image_url=None,
+            price=500000,
+            currency="VND",
+            campaign_id="CAMP_OK",
+            source_type="manual",
+            extra=None,
+        ),
+    )
     # Seed commission & promotion rows
-    crud.upsert_commission_policy(db, schemas.CommissionPolicyCreate(
-        campaign_id="CAMP_OK", reward_type="CPS", sales_ratio=10.0, sales_price=None, target_month="2025-09"
-    ))
-    crud.upsert_promotion(db, schemas.PromotionCreate(
-        campaign_id="CAMP_OK", name="Promo 10%", content="Giảm 10%", start_time="2025-09-01",
-        end_time="2025-10-01", coupon="SALE10", link="https://tiki.vn/promo"
-    ))
+    crud.upsert_commission_policy(
+        db,
+        schemas.CommissionPolicyCreate(
+            campaign_id="CAMP_OK",
+            reward_type="CPS",
+            sales_ratio=10.0,
+            sales_price=None,
+            target_month="2025-09",
+        ),
+    )
+    crud.upsert_promotion(
+        db,
+        schemas.PromotionCreate(
+            campaign_id="CAMP_OK",
+            name="Promo 10%",
+            content="Giảm 10%",
+            start_time="2025-09-01",
+            end_time="2025-10-01",
+            coupon="SALE10",
+            link="https://tiki.vn/promo",
+        ),
+    )
 
 
 def test_export_excel_structure_and_sources(client):
@@ -93,7 +166,9 @@ def test_export_excel_structure_and_sources(client):
 
     r = client.get("/offers/export-excel")
     assert r.status_code == 200
-    assert r.headers.get("content-type", "").startswith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert r.headers.get("content-type", "").startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
     # Load workbook into pandas
     buf = io.BytesIO(r.content)
@@ -111,44 +186,117 @@ def test_export_excel_structure_and_sources(client):
     # Ensure products include sources (without promotions)
     # Skip the Vietnamese header row (row index 1 in Excel, zero-based in pandas skiprows)
     dfp = xls.parse("Products", skiprows=[1])
-    assert (dfp["source_type"].isin(["datafeeds", "top_products", "manual", "excel"]).any())
+    assert (
+        dfp["source_type"].isin(["datafeeds", "top_products", "manual", "excel"]).any()
+    )
 
     # Enforce exact column order based on trans_products keys in backend
     expected_products_cols = [
-        "id","source","source_id","source_type","merchant","title","url","affiliate_url","image_url",
-        "price","currency","campaign_id","product_id","affiliate_link_available","domain","sku","discount",
-        "discount_amount","discount_rate","status_discount","updated_at","desc","cate","shop_name","update_time_raw"
+        "id",
+        "source",
+        "source_id",
+        "source_type",
+        "merchant",
+        "title",
+        "url",
+        "affiliate_url",
+        "image_url",
+        "price",
+        "currency",
+        "campaign_id",
+        "product_id",
+        "affiliate_link_available",
+        "domain",
+        "sku",
+        "discount",
+        "discount_amount",
+        "discount_rate",
+        "status_discount",
+        "updated_at",
+        "desc",
+        "cate",
+        "shop_name",
+        "update_time_raw",
     ]
     assert list(dfp.columns) == expected_products_cols
 
     # Other sheets
     dfc = xls.parse("Campaigns", skiprows=[1])
     expected_campaigns_cols = [
-        "campaign_id","merchant","campaign_name","approval_type","user_status","status","start_time","end_time",
-        "category","conversion_policy","cookie_duration","cookie_policy","description_url","scope","sub_category","type","campaign_url"
+        "campaign_id",
+        "merchant",
+        "campaign_name",
+        "approval_type",
+        "user_status",
+        "status",
+        "start_time",
+        "end_time",
+        "category",
+        "conversion_policy",
+        "cookie_duration",
+        "cookie_policy",
+        "description_url",
+        "scope",
+        "sub_category",
+        "type",
+        "campaign_url",
     ]
     assert list(dfc.columns) == expected_campaigns_cols
 
     dfcm = xls.parse("Commissions", skiprows=[1])
-    expected_comm_cols = ["id","campaign_id","reward_type","sales_ratio","sales_price","target_month"]
+    expected_comm_cols = [
+        "id",
+        "campaign_id",
+        "reward_type",
+        "sales_ratio",
+        "sales_price",
+        "target_month",
+    ]
     assert list(dfcm.columns) == expected_comm_cols
 
     dfpr = xls.parse("Promotions", skiprows=[1])
-    expected_prom_cols = ["id","campaign_id","merchant","name","content","start_time","end_time","coupon","link"]
+    expected_prom_cols = [
+        "id",
+        "campaign_id",
+        "merchant",
+        "name",
+        "content",
+        "start_time",
+        "end_time",
+        "coupon",
+        "link",
+    ]
     assert list(dfpr.columns) == expected_prom_cols
 
 
 def test_import_excel_required_and_success(client, tmp_path):
     # Build a minimal valid Products sheet with required fields
     trans = {
-        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn (*)", "source_type": "Loại nguồn",
-        "merchant": "Nhà bán (*)", "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
-        "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
-        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
-        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
-        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
-        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
-        "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+        "id": "Mã ID",
+        "source": "Nguồn",
+        "source_id": "Mã nguồn (*)",
+        "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)",
+        "title": "Tên sản phẩm (*)",
+        "url": "Link gốc",
+        "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm",
+        "price": "Giá",
+        "currency": "Tiền tệ",
+        "campaign_id": "Chiến dịch",
+        "product_id": "Mã sản phẩm nguồn",
+        "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền",
+        "sku": "SKU",
+        "discount": "Giá KM",
+        "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)",
+        "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật",
+        "desc": "Mô tả chi tiết",
+        "cate": "Danh mục",
+        "shop_name": "Tên cửa hàng",
+        "update_time_raw": "Thời gian cập nhật từ nguồn",
     }
 
     cols = list(trans.keys())
@@ -168,7 +316,16 @@ def test_import_excel_required_and_success(client, tmp_path):
         df.to_excel(writer, sheet_name="Products", index=False)
 
     with open(p1, "rb") as f:
-        r = client.post("/offers/import-excel", files={"file": ("case1.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        r = client.post(
+            "/offers/import-excel",
+            files={
+                "file": (
+                    "case1.xlsx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
     assert r.status_code == 200
     body = r.json()
     assert body.get("skipped_required", 0) >= 1
@@ -189,7 +346,16 @@ def test_import_excel_required_and_success(client, tmp_path):
         df2.to_excel(writer, sheet_name="Products", index=False)
 
     with open(p2, "rb") as f:
-        r2 = client.post("/offers/import-excel", files={"file": ("case2.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        r2 = client.post(
+            "/offers/import-excel",
+            files={
+                "file": (
+                    "case2.xlsx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
     assert r2.status_code == 200
     body2 = r2.json()
     assert body2.get("imported", 0) >= 1
@@ -199,19 +365,43 @@ def test_import_auto_convert_affiliate_url(client, tmp_path):
     # Seed a deeplink template for tikivn
     TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
     with TestingSessionLocal() as db:
-        crud.upsert_affiliate_template(db, schemas.AffiliateTemplateCreate(
-            merchant="tikivn", network="accesstrade", template="https://aff.example.com?url={target}", default_params=None, enabled=True
-        ))
+        crud.upsert_affiliate_template(
+            db,
+            schemas.AffiliateTemplateCreate(
+                merchant="tikivn",
+                network="accesstrade",
+                template="https://aff.example.com?url={target}",
+                default_params=None,
+                enabled=True,
+            ),
+        )
 
     trans = {
-        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn", "source_type": "Loại nguồn",
-        "merchant": "Nhà bán (*)", "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
-        "image_url": "Ảnh sản phẩm", "price": "Giá (*)", "currency": "Tiền tệ",
-        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
-        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
-        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
-        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
-        "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+        "id": "Mã ID",
+        "source": "Nguồn",
+        "source_id": "Mã nguồn",
+        "source_type": "Loại nguồn",
+        "merchant": "Nhà bán (*)",
+        "title": "Tên sản phẩm (*)",
+        "url": "Link gốc",
+        "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm",
+        "price": "Giá (*)",
+        "currency": "Tiền tệ",
+        "campaign_id": "Chiến dịch",
+        "product_id": "Mã sản phẩm nguồn",
+        "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền",
+        "sku": "SKU",
+        "discount": "Giá KM",
+        "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)",
+        "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật",
+        "desc": "Mô tả chi tiết",
+        "cate": "Danh mục",
+        "shop_name": "Tên cửa hàng",
+        "update_time_raw": "Thời gian cập nhật từ nguồn",
     }
     cols = list(trans.keys())
     header_vi = [trans[c] for c in cols]
@@ -231,48 +421,77 @@ def test_import_auto_convert_affiliate_url(client, tmp_path):
         df.to_excel(writer, sheet_name="Products", index=False)
 
     with open(p, "rb") as f:
-        r = client.post("/offers/import-excel", files={"file": ("auto_aff.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        r = client.post(
+            "/offers/import-excel",
+            files={
+                "file": (
+                    "auto_aff.xlsx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
     assert r.status_code == 200
 
     # verify inserted record has affiliate_url and affiliate_link_available=True
     resp = client.get("/offers")
     assert resp.status_code == 200
     items = resp.json()
-    assert any(it.get("merchant") == "tikivn" and it.get("title") == "Sản phẩm C" and it.get("affiliate_url") for it in items)
-    assert any(it.get("merchant") == "tikivn" and it.get("title") == "Sản phẩm C" and it.get("affiliate_link_available") is True for it in items)
+    assert any(
+        it.get("merchant") == "tikivn"
+        and it.get("title") == "Sản phẩm C"
+        and it.get("affiliate_url")
+        for it in items
+    )
+    assert any(
+        it.get("merchant") == "tikivn"
+        and it.get("title") == "Sản phẩm C"
+        and it.get("affiliate_link_available") is True
+        for it in items
+    )
 
 
 def test_export_campaigns_includes_case_variants_and_is_stable(client):
     # Seed variants of user_registration_status with different case/whitespace
     TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
     with TestingSessionLocal() as db:
-        crud.upsert_campaign(db, schemas.CampaignCreate(
-            campaign_id="CAMP_A",
-            merchant="shopa",
-            name="Shop A",
-            status="running",
-            user_registration_status="approved"  # lower-case
-        ))
-        crud.upsert_campaign(db, schemas.CampaignCreate(
-            campaign_id="CAMP_B",
-            merchant="shopb",
-            name="Shop B",
-            status="running",
-            user_registration_status="  APPROVED  "  # padded whitespace
-        ))
-        crud.upsert_campaign(db, schemas.CampaignCreate(
-            campaign_id="CAMP_C",
-            merchant="shopc",
-            name="Shop C",
-            status="paused",
-            user_registration_status="SUCCESSFUL"  # treated as APPROVED
-        ))
+        crud.upsert_campaign(
+            db,
+            schemas.CampaignCreate(
+                campaign_id="CAMP_A",
+                merchant="shopa",
+                name="Shop A",
+                status="running",
+                user_registration_status="approved",  # lower-case
+            ),
+        )
+        crud.upsert_campaign(
+            db,
+            schemas.CampaignCreate(
+                campaign_id="CAMP_B",
+                merchant="shopb",
+                name="Shop B",
+                status="running",
+                user_registration_status="  APPROVED  ",  # padded whitespace
+            ),
+        )
+        crud.upsert_campaign(
+            db,
+            schemas.CampaignCreate(
+                campaign_id="CAMP_C",
+                merchant="shopc",
+                name="Shop C",
+                status="paused",
+                user_registration_status="SUCCESSFUL",  # treated as APPROVED
+            ),
+        )
 
     # Run export twice and ensure Campaigns sheet consistently includes all 3
     def _get_campaign_ids_from_export():
         r = client.get("/offers/export-excel")
         assert r.status_code == 200
         import io, pandas as pd
+
         xls = pd.ExcelFile(io.BytesIO(r.content))
         dfc = xls.parse("Campaigns", skiprows=[1])
         return sorted(list(dfc["campaign_id"].astype(str)))
@@ -289,15 +508,31 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
     # Chuẩn bị header 2 hàng cho từng sheet theo mapping trong backend
     # Products
     trans_products = {
-        "id": "Mã ID", "source": "Nguồn", "source_id": "Mã nguồn (*)", "source_type": "Loại nguồn",
+        "id": "Mã ID",
+        "source": "Nguồn",
+        "source_id": "Mã nguồn (*)",
+        "source_type": "Loại nguồn",
         "merchant": "Nhà bán (*)",
-        "title": "Tên sản phẩm (*)", "url": "Link gốc", "affiliate_url": "Link tiếp thị",
-        "image_url": "Ảnh sản phẩm", "price": "Giá", "currency": "Tiền tệ",
-        "campaign_id": "Chiến dịch", "product_id": "Mã sản phẩm nguồn", "affiliate_link_available": "Có affiliate?",
-        "domain": "Tên miền", "sku": "SKU", "discount": "Giá KM", "discount_amount": "Mức giảm",
-        "discount_rate": "Tỷ lệ giảm (%)", "status_discount": "Có khuyến mãi?",
-        "updated_at": "Ngày cập nhật", "desc": "Mô tả chi tiết",
-        "cate": "Danh mục", "shop_name": "Tên cửa hàng", "update_time_raw": "Thời gian cập nhật từ nguồn",
+        "title": "Tên sản phẩm (*)",
+        "url": "Link gốc",
+        "affiliate_url": "Link tiếp thị",
+        "image_url": "Ảnh sản phẩm",
+        "price": "Giá",
+        "currency": "Tiền tệ",
+        "campaign_id": "Chiến dịch",
+        "product_id": "Mã sản phẩm nguồn",
+        "affiliate_link_available": "Có affiliate?",
+        "domain": "Tên miền",
+        "sku": "SKU",
+        "discount": "Giá KM",
+        "discount_amount": "Mức giảm",
+        "discount_rate": "Tỷ lệ giảm (%)",
+        "status_discount": "Có khuyến mãi?",
+        "updated_at": "Ngày cập nhật",
+        "desc": "Mô tả chi tiết",
+        "cate": "Danh mục",
+        "shop_name": "Tên cửa hàng",
+        "update_time_raw": "Thời gian cập nhật từ nguồn",
     }
     p_cols = list(trans_products.keys())
     p_head = [trans_products[c] for c in p_cols]
@@ -313,13 +548,23 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
 
     # Campaigns
     trans_campaigns = {
-        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "campaign_name": "Tên chiến dịch",
-        "approval_type": "Approval", "user_status": "Trạng thái của tôi", "status": "Tình trạng",
-        "start_time": "Bắt đầu", "end_time": "Kết thúc",
-        "category": "Danh mục chính", "conversion_policy": "Chính sách chuyển đổi",
-        "cookie_duration": "Hiệu lực cookie (giây)", "cookie_policy": "Chính sách cookie",
-        "description_url": "Mô tả (Web)", "scope": "Phạm vi", "sub_category": "Danh mục phụ",
-        "type": "Loại", "campaign_url": "URL chiến dịch",
+        "campaign_id": "Mã chiến dịch",
+        "merchant": "Nhà bán",
+        "campaign_name": "Tên chiến dịch",
+        "approval_type": "Approval",
+        "user_status": "Trạng thái của tôi",
+        "status": "Tình trạng",
+        "start_time": "Bắt đầu",
+        "end_time": "Kết thúc",
+        "category": "Danh mục chính",
+        "conversion_policy": "Chính sách chuyển đổi",
+        "cookie_duration": "Hiệu lực cookie (giây)",
+        "cookie_policy": "Chính sách cookie",
+        "description_url": "Mô tả (Web)",
+        "scope": "Phạm vi",
+        "sub_category": "Danh mục phụ",
+        "type": "Loại",
+        "campaign_url": "URL chiến dịch",
     }
     c_cols = list(trans_campaigns.keys())
     c_head = [trans_campaigns[c] for c in c_cols]
@@ -333,8 +578,11 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
 
     # Commissions
     trans_comm = {
-        "campaign_id": "Mã chiến dịch", "reward_type": "Kiểu thưởng", "sales_ratio": "Tỷ lệ (%)",
-        "sales_price": "Hoa hồng cố định", "target_month": "Tháng áp dụng",
+        "campaign_id": "Mã chiến dịch",
+        "reward_type": "Kiểu thưởng",
+        "sales_ratio": "Tỷ lệ (%)",
+        "sales_price": "Hoa hồng cố định",
+        "target_month": "Tháng áp dụng",
     }
     m_cols = list(trans_comm.keys())
     m_head = [trans_comm[c] for c in m_cols]
@@ -347,8 +595,14 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
 
     # Promotions
     trans_prom = {
-        "campaign_id": "Mã chiến dịch", "merchant": "Nhà bán", "name": "Tên khuyến mãi", "content": "Nội dung",
-        "start_time": "Bắt đầu KM", "end_time": "Kết thúc KM", "coupon": "Mã giảm", "link": "Link khuyến mãi",
+        "campaign_id": "Mã chiến dịch",
+        "merchant": "Nhà bán",
+        "name": "Tên khuyến mãi",
+        "content": "Nội dung",
+        "start_time": "Bắt đầu KM",
+        "end_time": "Kết thúc KM",
+        "coupon": "Mã giảm",
+        "link": "Link khuyến mãi",
     }
     pr_cols = list(trans_prom.keys())
     pr_head = [trans_prom[c] for c in pr_cols]
@@ -371,7 +625,16 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
         df_pr.to_excel(writer, sheet_name="Promotions", index=False)
 
     with open(p, "rb") as f:
-        r = client.post("/offers/import-excel", files={"file": ("multi.xlsx", f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        r = client.post(
+            "/offers/import-excel",
+            files={
+                "file": (
+                    "multi.xlsx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
     assert r.status_code == 200
     body = r.json()
     assert body.get("imported", 0) >= 1
@@ -383,26 +646,44 @@ def test_import_multiple_sheets_and_autogen_ids(client, tmp_path):
     TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
     with TestingSessionLocal() as db:
         # Products: có sản phẩm excel với title "Product Z excel" và source_id 14 ký tự bắt đầu bằng 'exp'
-        items = db.query(models.ProductOffer).filter(models.ProductOffer.source == "excel", models.ProductOffer.title == "Product Z excel").all()
+        items = (
+            db.query(models.ProductOffer)
+            .filter(
+                models.ProductOffer.source == "excel",
+                models.ProductOffer.title == "Product Z excel",
+            )
+            .all()
+        )
         assert items, "Không thấy product vừa import"
         sid = items[0].source_id
         assert isinstance(sid, str) and len(sid) == 14 and sid.startswith("exp")
 
         # Campaigns
         camp = crud.get_campaign_by_cid(db, "CAMP_XL")
-        assert camp is not None and (camp.user_registration_status or "").upper() in ("APPROVED", "SUCCESSFUL")
+        assert camp is not None and (camp.user_registration_status or "").upper() in (
+            "APPROVED",
+            "SUCCESSFUL",
+        )
 
         # Commissions
-        cm = db.query(models.CommissionPolicy).filter(
-            models.CommissionPolicy.campaign_id == "CAMP_CMC",
-            models.CommissionPolicy.reward_type == "CPS",
-            models.CommissionPolicy.target_month == "2025-09",
-        ).first()
+        cm = (
+            db.query(models.CommissionPolicy)
+            .filter(
+                models.CommissionPolicy.campaign_id == "CAMP_CMC",
+                models.CommissionPolicy.reward_type == "CPS",
+                models.CommissionPolicy.target_month == "2025-09",
+            )
+            .first()
+        )
         assert cm is not None
 
         # Promotions
-        pr = db.query(models.Promotion).filter(
-            models.Promotion.campaign_id == "CAMP_PRM",
-            models.Promotion.name == "Back to school",
-        ).first()
+        pr = (
+            db.query(models.Promotion)
+            .filter(
+                models.Promotion.campaign_id == "CAMP_PRM",
+                models.Promotion.name == "Back to school",
+            )
+            .first()
+        )
         assert pr is not None

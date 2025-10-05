@@ -53,29 +53,37 @@ def seed_minimal(client: TestClient):
     # seed a running + APPROVED campaign so exports have sensible data
     TestingSessionLocal = getattr(app.state, "TestingSessionLocal")
     with TestingSessionLocal() as db:
-        crud.upsert_campaign(db, schemas.CampaignCreate(
-            campaign_id="CAMP_OK",
-            merchant="tikivn",
-            name="Tiki",
-            status="running",
-            user_registration_status="APPROVED",
-        ))
-        # a couple of offers from different sources
-        for idx, src in enumerate(["datafeeds", "top_products", "promotions", "manual", "excel"], start=1):
-            crud.upsert_offer_by_source(db, schemas.ProductOfferCreate(
-                source="accesstrade" if src != "excel" else "excel",
-                source_id=f"smoke-{src}-{idx}",
-                merchant="tikivn",
-                title=f"SP {src.upper()} {idx}",
-                url=f"https://tiki.vn/{idx}",
-                affiliate_url=None,
-                image_url=None,
-                price=100000*idx,
-                currency="VND",
+        crud.upsert_campaign(
+            db,
+            schemas.CampaignCreate(
                 campaign_id="CAMP_OK",
-                source_type=src,
-                extra=None,
-            ))
+                merchant="tikivn",
+                name="Tiki",
+                status="running",
+                user_registration_status="APPROVED",
+            ),
+        )
+        # a couple of offers from different sources
+        for idx, src in enumerate(
+            ["datafeeds", "top_products", "promotions", "manual", "excel"], start=1
+        ):
+            crud.upsert_offer_by_source(
+                db,
+                schemas.ProductOfferCreate(
+                    source="accesstrade" if src != "excel" else "excel",
+                    source_id=f"smoke-{src}-{idx}",
+                    merchant="tikivn",
+                    title=f"SP {src.upper()} {idx}",
+                    url=f"https://tiki.vn/{idx}",
+                    affiliate_url=None,
+                    image_url=None,
+                    price=100000 * idx,
+                    currency="VND",
+                    campaign_id="CAMP_OK",
+                    source_type=src,
+                    extra=None,
+                ),
+            )
 
 
 def main():

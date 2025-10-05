@@ -3,7 +3,9 @@ import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
-fastapi = pytest.importorskip("fastapi", reason="FastAPI not installed in this test environment")
+fastapi = pytest.importorskip(
+    "fastapi", reason="FastAPI not installed in this test environment"
+)
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
@@ -28,28 +30,34 @@ def db():
 
 def test_upsert_campaign_preserves_existing_when_placeholder(db):
     # Seed with real values
-    crud.upsert_campaign(db, schemas.CampaignCreate(
-        campaign_id="CAMPX",
-        merchant="tikivn",
-        name="Tiki",
-        status="running",
-        approval="manual",
-        start_time="2025-01-01",
-        end_time="2025-12-31",
-        user_registration_status="APPROVED",
-    ))
+    crud.upsert_campaign(
+        db,
+        schemas.CampaignCreate(
+            campaign_id="CAMPX",
+            merchant="tikivn",
+            name="Tiki",
+            status="running",
+            approval="manual",
+            start_time="2025-01-01",
+            end_time="2025-12-31",
+            user_registration_status="APPROVED",
+        ),
+    )
 
     # Attempt to overwrite with placeholders
-    crud.upsert_campaign(db, schemas.CampaignCreate(
-        campaign_id="CAMPX",
-        merchant="API_MISSING",
-        name="NO_DATA",
-        status="",
-        approval=None,
-        start_time="API_MISSING",
-        end_time="NO_DATA",
-        user_registration_status=None,
-    ))
+    crud.upsert_campaign(
+        db,
+        schemas.CampaignCreate(
+            campaign_id="CAMPX",
+            merchant="API_MISSING",
+            name="NO_DATA",
+            status="",
+            approval=None,
+            start_time="API_MISSING",
+            end_time="NO_DATA",
+            user_registration_status=None,
+        ),
+    )
 
     row = crud.get_campaign_by_cid(db, "CAMPX")
     assert row is not None

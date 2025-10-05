@@ -15,6 +15,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 import crud, schemas
 
+
 @pytest.fixture(scope="module")
 def client():
     engine = create_engine(
@@ -38,10 +39,16 @@ def client():
 
     # Seed one affiliate template
     with TestingSessionLocal() as db:
-        crud.upsert_affiliate_template(db, schemas.AffiliateTemplateCreate(
-            network="accesstrade", platform="tikivn",
-            template="https://go.aff/?url={target}&sub1={sub1}", default_params={"sub1": "base"}, enabled=True
-        ))
+        crud.upsert_affiliate_template(
+            db,
+            schemas.AffiliateTemplateCreate(
+                network="accesstrade",
+                platform="tikivn",
+                template="https://go.aff/?url={target}&sub1={sub1}",
+                default_params={"sub1": "base"},
+                enabled=True,
+            ),
+        )
     return c
 
 
@@ -49,11 +56,14 @@ def test_shortlink_generation_and_redirect_and_stats_filters(client):
     # Generate 3 shortlinks with different params
     toks = []
     for i in range(3):
-        r = client.post("/aff/convert", json={
-            "platform": "tikivn",
-            "url": f"https://tiki.vn/p{i}",
-            "params": {"sub1": f"u{i}"}
-        })
+        r = client.post(
+            "/aff/convert",
+            json={
+                "platform": "tikivn",
+                "url": f"https://tiki.vn/p{i}",
+                "params": {"sub1": f"u{i}"},
+            },
+        )
         assert r.status_code == 200
         body = r.json()
         toks.append(body["short_url"].split("/r/")[-1])
@@ -103,4 +113,3 @@ def test_shortlink_generation_and_redirect_and_stats_filters(client):
     assert r_del.status_code == 200 and r_del.json().get("ok") is True
     r_detail_missing = client.get(f"/aff/shortlinks/{t3}")
     assert r_detail_missing.status_code == 404
-

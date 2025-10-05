@@ -46,7 +46,9 @@ def norm_user_status(val):
 
 
 def current_summary(db):
-    rows = db.query(models.Campaign.status, models.Campaign.user_registration_status).all()
+    rows = db.query(
+        models.Campaign.status, models.Campaign.user_registration_status
+    ).all()
     total = len(rows)
     by_status = Counter()
     by_user = Counter()
@@ -74,13 +76,17 @@ def main():
 
         targets = (
             db.query(models.Campaign)
-            .filter((models.Campaign.user_registration_status.is_(None)) | (models.Campaign.user_registration_status == ""))
+            .filter(
+                (models.Campaign.user_registration_status.is_(None))
+                | (models.Campaign.user_registration_status == "")
+            )
             .all()
         )
         fixed = 0
         for c in targets:
             # Call async function safely
             import asyncio
+
             camp = asyncio.run(fetch_campaign_detail(db, c.campaign_id))
             if not camp:
                 continue
@@ -92,22 +98,31 @@ def main():
             )
             if not user_raw:
                 appr = camp.get("approval")
-                if isinstance(appr, str) and appr.lower() in ("successful", "pending", "unregistered"):
-                    user_raw = "APPROVED" if appr.lower() == "successful" else appr.upper()
+                if isinstance(appr, str) and appr.lower() in (
+                    "successful",
+                    "pending",
+                    "unregistered",
+                ):
+                    user_raw = (
+                        "APPROVED" if appr.lower() == "successful" else appr.upper()
+                    )
             eff = norm_user_status(user_raw)
             if not eff:
                 continue
             # Upsert back
-            crud.upsert_campaign(db, schemas.CampaignCreate(
-                campaign_id=c.campaign_id,
-                merchant=c.merchant,
-                name=c.name,
-                status=c.status,
-                approval=c.approval,
-                start_time=c.start_time,
-                end_time=c.end_time,
-                user_registration_status=eff,
-            ))
+            crud.upsert_campaign(
+                db,
+                schemas.CampaignCreate(
+                    campaign_id=c.campaign_id,
+                    merchant=c.merchant,
+                    name=c.name,
+                    status=c.status,
+                    approval=c.approval,
+                    start_time=c.start_time,
+                    end_time=c.end_time,
+                    user_registration_status=eff,
+                ),
+            )
             fixed += 1
 
         print(f"Updated campaigns: {fixed}")

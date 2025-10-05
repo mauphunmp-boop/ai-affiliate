@@ -58,7 +58,7 @@ export default function OffersListPage() {
       const r = await getHealthFull();
       const val = r?.data?.counts?.offers;
       if (typeof val === 'number') setTotalCount(val);
-    } catch (e) {
+    } catch {
       // ignore silently; giữ nguyên totalCount cũ
     } finally {
       setTotalLoading(false);

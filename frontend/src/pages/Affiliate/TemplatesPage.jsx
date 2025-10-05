@@ -21,7 +21,6 @@ import { useT } from '../../i18n/I18nProvider.jsx';
 export default function TemplatesPage() {
   if (import.meta.env.DEV) {
     // Render debug (avoid spamming in test env)
-    // eslint-disable-next-line no-console
     console.debug('[TemplatesPage] render at', performance.now().toFixed(1));
   }
   React.useEffect(()=>{ if(import.meta.env.DEV){ try { performance.mark?.('TemplatesPage:paint'); } catch {} } }, []);
@@ -133,7 +132,7 @@ export default function TemplatesPage() {
     } finally { setConfirm({ open:false, row:null }); }
   };
 
-  const columns = [
+  const columns = React.useMemo(() => [
     { key: 'id', label: t('templates_id'), sx:{ width:70 } },
     { key: 'network', label: t('templates_network'), sx:{ width:110 } },
   { key: 'platform', label: t('templates_platform'), render: r => r.platform || <em>{t('templates_platform_default')}</em>, sx:{ width:120 } },
@@ -146,7 +145,7 @@ export default function TemplatesPage() {
         <Tooltip title={t('tooltip_delete')}><IconButton size="small" color="error" aria-label={t('tooltip_delete')} onClick={()=>setConfirm({ open:true, row:r })}><DeleteIcon fontSize="inherit"/></IconButton></Tooltip>
       </>
     ) }
-  ];
+  ], [t]);
 
   const doExport = () => {
     const current = tableState?.processed || rows;

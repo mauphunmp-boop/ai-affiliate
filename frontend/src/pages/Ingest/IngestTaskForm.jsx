@@ -11,7 +11,7 @@ function parseJsonSafe(v) {
 
 // runningTaskId: id của task đang chạy (spinner chỉ hiển thị cho task này)
 export default function IngestTaskForm({ task, onRun, loadingTaskIds=new Set(), defaultCollapsed=true }) {
-  const { t, lang } = useT();
+  const { t } = useT();
   const [form, setForm] = useState(() => ({ ...task.defaultPayload }));
   const [raw, setRaw] = useState(() => initRaw(task.defaultPayload, task.fields));
   const [error, setError] = useState(null);

@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
     <meta name="theme-color" content="#1976d2" />
     <meta name="description" content="AI Affiliate Dashboard – Quản lý links, offers, shortlinks, ingest và metrics." />
+    <script>
+      // Hard guard: if this admin UI is ever loaded under the wrong host, bounce back to apex
+      (function(){
+        try{
+          var allowed = ['admin.tuvanmuasam.app','localhost','127.0.0.1'];
+          var host = (location.hostname||'').toLowerCase();
+          if(allowed.indexOf(host) === -1){
+            location.replace('https://tuvanmuasam.app/');
+          }
+        }catch(e){}
+      })();
+    </script>
   <link rel="icon" type="image/svg+xml" href="/vite.svg" />
   <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/vite.svg" />
@@ -36,5 +48,3 @@
     </script>
   </body>
 </html>
-docker compose stop frontend
-docker compose up -d frontend

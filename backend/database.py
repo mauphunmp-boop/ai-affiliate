@@ -20,24 +20,28 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # 3. Nếu TESTING=1 cũng dùng SQLite.
 # 4. Ngược lại: fallback Postgres (dành cho môi trường docker-compose).
 if not DATABASE_URL:
-    running_pytest = bool(os.getenv("PYTEST_CURRENT_TEST")) or ('pytest' in sys.modules)  # type: ignore[name-defined]
+    running_pytest = bool(os.getenv("PYTEST_CURRENT_TEST")) or ("pytest" in sys.modules)  # type: ignore[name-defined]
     if running_pytest or os.getenv("TESTING") == "1":
         DATABASE_URL = "sqlite:///./test.db"
     else:
         DB_USER = os.getenv("POSTGRES_USER", "affiliate_user")
         DB_PASS = os.getenv("POSTGRES_PASSWORD", "affiliate_pass")
         DB_NAME = os.getenv("POSTGRES_DB", "affiliate_db")
-        DB_HOST = os.getenv("POSTGRES_HOST", "db")   # trong Docker: service name "db"
+        DB_HOST = os.getenv("POSTGRES_HOST", "db")  # trong Docker: service name "db"
         DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-        DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        DATABASE_URL = (
+            f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+        )
 
 # Nếu vì lý do gì đó vẫn rơi vào Postgres nhưng chưa cài psycopg2, fallback mềm sang SQLite để test không hỏng.
 if DATABASE_URL.startswith("postgresql"):
     try:
-        import psycopg2  # type: ignore
+        pass  # type: ignore
     except Exception:
         # Ghi log nhẹ (dùng print tránh logger chưa init)
-        print("[database] psycopg2 không khả dụng -> fallback SQLite test.db cho môi trường test.")
+        print(
+            "[database] psycopg2 không khả dụng -> fallback SQLite test.db cho môi trường test."
+        )
         DATABASE_URL = "sqlite:///./test.db"
 
 # SQLite needs special connect_args for thread check
@@ -81,14 +85,20 @@ def apply_simple_migrations(engine) -> None:
     if "campaign_id" not in cols:
         statements.append("ALTER TABLE product_offers ADD COLUMN campaign_id VARCHAR")
     if "approval_status" not in cols:
-        statements.append("ALTER TABLE product_offers ADD COLUMN approval_status VARCHAR")
+        statements.append(
+            "ALTER TABLE product_offers ADD COLUMN approval_status VARCHAR"
+        )
     if "eligible_commission" not in cols:
         # DEFAULT FALSE is safe; existing rows get FALSE
-        statements.append("ALTER TABLE product_offers ADD COLUMN eligible_commission BOOLEAN DEFAULT FALSE")
+        statements.append(
+            "ALTER TABLE product_offers ADD COLUMN eligible_commission BOOLEAN DEFAULT FALSE"
+        )
     if "source_type" not in cols:
         statements.append("ALTER TABLE product_offers ADD COLUMN source_type VARCHAR")
     if "affiliate_link_available" not in cols:
-        statements.append("ALTER TABLE product_offers ADD COLUMN affiliate_link_available BOOLEAN DEFAULT FALSE")
+        statements.append(
+            "ALTER TABLE product_offers ADD COLUMN affiliate_link_available BOOLEAN DEFAULT FALSE"
+        )
     if "product_id" not in cols:
         statements.append("ALTER TABLE product_offers ADD COLUMN product_id VARCHAR")
     if "extra" not in cols:
@@ -97,9 +107,13 @@ def apply_simple_migrations(engine) -> None:
     if "updated_at" not in cols:
         # Keep it nullable to avoid heavy locks; app code sets it on update
         if engine.dialect.name == "postgresql":
-            statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMPTZ")
+            statements.append(
+                "ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMPTZ"
+            )
         else:
-            statements.append("ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMP")
+            statements.append(
+                "ALTER TABLE product_offers ADD COLUMN updated_at TIMESTAMP"
+            )
 
     # Migrate affiliate_templates: add platform column if missing
     try:
@@ -111,9 +125,13 @@ def apply_simple_migrations(engine) -> None:
     if "platform" not in cols_tpl:
         # Add nullable platform column; keep it generic VARCHAR/TEXT
         if engine.dialect.name == "postgresql":
-            statements_tpl.append("ALTER TABLE affiliate_templates ADD COLUMN platform VARCHAR")
+            statements_tpl.append(
+                "ALTER TABLE affiliate_templates ADD COLUMN platform VARCHAR"
+            )
         else:
-            statements_tpl.append("ALTER TABLE affiliate_templates ADD COLUMN platform TEXT")
+            statements_tpl.append(
+                "ALTER TABLE affiliate_templates ADD COLUMN platform TEXT"
+            )
 
     with engine.begin() as conn:
         # Apply column additions first (if any)
@@ -126,10 +144,11 @@ def apply_simple_migrations(engine) -> None:
 
         # Ensure shortlinks table exists (very small table) -- create minimal if metadata.create_all missed
         try:
-            if 'shortlinks' not in inspector.get_table_names():
-                if engine.dialect.name == 'postgresql':
-                    conn.execute(text(
-                        """
+            if "shortlinks" not in inspector.get_table_names():
+                if engine.dialect.name == "postgresql":
+                    conn.execute(
+                        text(
+                            """
                         CREATE TABLE IF NOT EXISTS shortlinks (
                           token VARCHAR PRIMARY KEY,
                           affiliate_url TEXT NOT NULL,
@@ -138,10 +157,12 @@ def apply_simple_migrations(engine) -> None:
                           click_count INTEGER DEFAULT 0
                         )
                         """
-                    ))
+                        )
+                    )
                 else:
-                    conn.execute(text(
-                        """
+                    conn.execute(
+                        text(
+                            """
                         CREATE TABLE IF NOT EXISTS shortlinks (
                           token TEXT PRIMARY KEY,
                           affiliate_url TEXT NOT NULL,
@@ -150,21 +171,33 @@ def apply_simple_migrations(engine) -> None:
                           click_count INTEGER DEFAULT 0
                         )
                         """
-                    ))
+                        )
+                    )
         except Exception:
             pass
 
         # Create simple index for web_vitals (name + timestamp) if table exists and index missing
         try:
-            if 'web_vitals' in inspector.get_table_names():
+            if "web_vitals" in inspector.get_table_names():
                 # crude check for existing index name
                 ix_rows = []
-                if engine.dialect.name == 'postgresql':
-                    ix_rows = conn.execute(text("SELECT indexname FROM pg_indexes WHERE tablename='web_vitals'"))
+                if engine.dialect.name == "postgresql":
+                    ix_rows = conn.execute(
+                        text(
+                            "SELECT indexname FROM pg_indexes WHERE tablename='web_vitals'"
+                        )
+                    )
                 # For SQLite we skip (auto fast enough) unless manual create
                 names = {r[0] for r in ix_rows} if ix_rows else set()
-                if engine.dialect.name == 'postgresql' and 'ix_web_vitals_name_ts' not in names:
-                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_vitals_name_ts ON web_vitals (name, timestamp DESC)"))
+                if (
+                    engine.dialect.name == "postgresql"
+                    and "ix_web_vitals_name_ts" not in names
+                ):
+                    conn.execute(
+                        text(
+                            "CREATE INDEX IF NOT EXISTS ix_web_vitals_name_ts ON web_vitals (name, timestamp DESC)"
+                        )
+                    )
         except Exception:
             pass
 
@@ -174,15 +207,21 @@ def apply_simple_migrations(engine) -> None:
         try:
             if engine.dialect.name == "postgresql":
                 # Kiểm tra tồn tại constraint uq_merchant_network
-                chk = conn.execute(text(
-                    """
+                chk = conn.execute(
+                    text(
+                        """
                     SELECT 1 FROM pg_constraint c
                     JOIN pg_class t ON c.conrelid = t.oid
                     WHERE t.relname = 'affiliate_templates' AND c.conname = 'uq_merchant_network'
                     """
-                )).fetchone()
+                    )
+                ).fetchone()
                 if chk:
-                    conn.execute(text("ALTER TABLE affiliate_templates DROP CONSTRAINT IF EXISTS uq_merchant_network"))
+                    conn.execute(
+                        text(
+                            "ALTER TABLE affiliate_templates DROP CONSTRAINT IF EXISTS uq_merchant_network"
+                        )
+                    )
             # SQLite không hỗ trợ drop constraint dễ dàng → bỏ qua an toàn.
         except Exception:
             # Không dừng startup nếu drop constraint thất bại
@@ -191,8 +230,9 @@ def apply_simple_migrations(engine) -> None:
         # Cleanup migration: null-out placeholder strings previously persisted
         try:
             # Works for both Postgres and SQLite (CASE/NULLIF expressions)
-            conn.execute(text(
-                """
+            conn.execute(
+                text(
+                    """
                 UPDATE campaigns SET
                   start_time = CASE WHEN start_time IN ('API_MISSING','NO_DATA','') THEN NULL ELSE start_time END,
                   end_time = CASE WHEN end_time IN ('API_MISSING','NO_DATA','') THEN NULL ELSE end_time END,
@@ -202,7 +242,8 @@ def apply_simple_migrations(engine) -> None:
                   approval = CASE WHEN approval IN ('API_MISSING','NO_DATA','') THEN NULL ELSE approval END,
                   user_registration_status = CASE WHEN user_registration_status IN ('API_MISSING','NO_DATA','') THEN NULL ELSE user_registration_status END
                 """
-            ))
+                )
+            )
         except Exception:
             # Non-fatal: cleanup may run on non-existent table or fail safely
             pass

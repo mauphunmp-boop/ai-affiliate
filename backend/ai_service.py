@@ -47,7 +47,10 @@ async def suggest_products_with_config(
     )
 
     try:
-        client = get_client(api_key=config.api_key, base_url=config.base_url or "https://api.deepseek.com")
+        client = get_client(
+            api_key=config.api_key,
+            base_url=config.base_url or "https://api.deepseek.com",
+        )
 
         resp = client.chat.completions.create(
             model=(config.model or "deepseek-chat"),

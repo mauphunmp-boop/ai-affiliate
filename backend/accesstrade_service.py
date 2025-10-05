@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 import crud
 import logging
 import json
-from urllib.parse import urlparse
 import os
 from datetime import datetime, UTC
 
@@ -12,6 +11,18 @@ logger = logging.getLogger("affiliate_api")
 
 # --- JSONL raw logger ---
 _LOG_DIR = os.getenv("API_LOG_DIR", "./logs")
+# Optional size-based rotation to avoid unbounded growth
+_LOG_MAX_BYTES = None
+_LOG_MAX_FILES = None
+try:
+    _LOG_MAX_BYTES = int(os.getenv("API_LOG_MAX_BYTES", "0")) or None
+except Exception:
+    _LOG_MAX_BYTES = None
+try:
+    _LOG_MAX_FILES = max(1, int(os.getenv("API_LOG_MAX_FILES", "0"))) or None
+except Exception:
+    _LOG_MAX_FILES = None
+
 
 def _ensure_log_dir() -> None:
     try:
@@ -19,10 +30,47 @@ def _ensure_log_dir() -> None:
     except Exception:
         pass
 
+
+def _maybe_rotate(fpath: str) -> None:
+    """
+    If rotation is enabled via env vars, rotate the file when it exceeds size.
+    Rotation scheme: rename to filename.YYYYmmdd-HHMMSS.jsonl, keep up to N files.
+    """
+    try:
+        if not (_LOG_MAX_BYTES and _LOG_MAX_FILES):
+            return
+        if not os.path.exists(fpath):
+            return
+        size = os.path.getsize(fpath)
+        if size < _LOG_MAX_BYTES:
+            return
+        base = os.path.basename(fpath)
+        ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        rotated = os.path.join(_LOG_DIR, f"{base}.{ts}")
+        os.replace(fpath, rotated)
+        # Prune older rotations
+        prefix = base + "."
+        files = [
+            fn for fn in os.listdir(_LOG_DIR)
+            if fn.startswith(prefix) and os.path.isfile(os.path.join(_LOG_DIR, fn))
+        ]
+        # Sort by name (timestamp suffix ensures chronological order)
+        files.sort(reverse=True)
+        for old in files[_LOG_MAX_FILES - 1 :]:
+            try:
+                os.remove(os.path.join(_LOG_DIR, old))
+            except Exception:
+                pass
+    except Exception:
+        # Never let rotation crash the request path
+        pass
+
+
 def _log_jsonl(filename: str, payload: dict) -> None:
     try:
         _ensure_log_dir()
         fpath = os.path.join(_LOG_DIR, filename)
+        _maybe_rotate(fpath)
         data = dict(payload)
         data.setdefault("ts", datetime.now(UTC).isoformat())
         with open(fpath, "a", encoding="utf-8") as f:
@@ -30,11 +78,13 @@ def _log_jsonl(filename: str, payload: dict) -> None:
     except Exception as e:
         logger.debug("rawlog error %s: %s", filename, e)
 
+
 def _get_at_config(db: Session):
     cfg = crud.get_api_config(db, "accesstrade")
     if not cfg or not cfg.api_key or not cfg.base_url:
         raise ValueError("Chưa cấu hình APIConfig 'accesstrade'")
     return cfg
+
 
 def _is_mock_cfg(cfg) -> bool:
     try:
@@ -45,14 +95,17 @@ def _is_mock_cfg(cfg) -> bool:
     except Exception:
         return False
 
+
 def _headers(api_key: str) -> Dict[str, str]:
     return {
         "Authorization": f"Token {api_key}",
         "Accept": "application/json",
     }
 
+
 # --- Lấy toàn bộ campaign (song song theo "window" trang) ---
-import time, asyncio
+import asyncio
+
 
 async def fetch_campaigns_full_all(
     db: Session,
@@ -70,9 +123,27 @@ async def fetch_campaigns_full_all(
     cfg = _get_at_config(db)
     if _is_mock_cfg(cfg):
         return [
-            {"campaign_id": "CAMP1", "merchant": "shopee", "name": "Shopee", "status": "running", "approval": "manual"},
-            {"campaign_id": "CAMP2", "merchant": "lazada", "name": "Lazada", "status": "paused", "approval": "manual"},
-            {"campaign_id": "CAMP3", "merchant": "tiki", "name": "Tiki", "status": "running", "approval": "successful"},
+            {
+                "campaign_id": "CAMP1",
+                "merchant": "shopee",
+                "name": "Shopee",
+                "status": "running",
+                "approval": "manual",
+            },
+            {
+                "campaign_id": "CAMP2",
+                "merchant": "lazada",
+                "name": "Lazada",
+                "status": "paused",
+                "approval": "manual",
+            },
+            {
+                "campaign_id": "CAMP3",
+                "merchant": "tiki",
+                "name": "Tiki",
+                "status": "running",
+                "approval": "successful",
+            },
         ]
     base_url = cfg.base_url.rstrip("/") + "/v1/campaigns"
 
@@ -91,7 +162,9 @@ async def fetch_campaigns_full_all(
     out: List[Dict[str, Any]] = []
     sem = asyncio.Semaphore(max(1, int(page_concurrency)))
 
-    async def fetch_one(client: httpx.AsyncClient, page: int, limit_hint: int) -> List[Dict[str, Any]]:
+    async def fetch_one(
+        client: httpx.AsyncClient, page: int, limit_hint: int
+    ) -> List[Dict[str, Any]]:
         curr_limit = int(limit_hint)
         for attempt in range(1, 4):
             params: Dict[str, str] = {"page": str(page), "limit": str(curr_limit)}
@@ -99,36 +172,46 @@ async def fetch_campaigns_full_all(
                 params["status"] = status_param
             try:
                 async with sem:
-                    r = await client.get(base_url, headers=_headers(cfg.api_key), params=params)
-                ok = (r.status_code == 200)
+                    r = await client.get(
+                        base_url, headers=_headers(cfg.api_key), params=params
+                    )
+                ok = r.status_code == 200
                 j = r.json() if ok else None
                 items = j.get("data") if ok and isinstance(j, dict) else []
-                _log_jsonl("campaigns_full.jsonl", {
-                    "endpoint": "campaigns_full",
-                    "page": page,
-                    "limit": curr_limit,
-                    "status_filter": status_param,
-                    "ok": ok,
-                    "count": len(items),
-                    "attempt": attempt,
-                    "status_code": getattr(r, "status_code", None),
-                })
+                _log_jsonl(
+                    "campaigns_full.jsonl",
+                    {
+                        "endpoint": "campaigns_full",
+                        "page": page,
+                        "limit": curr_limit,
+                        "status_filter": status_param,
+                        "ok": ok,
+                        "count": len(items),
+                        "attempt": attempt,
+                        "status_code": getattr(r, "status_code", None),
+                    },
+                )
                 return items
             except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-                _log_jsonl("campaigns_full.jsonl", {
-                    "endpoint": "campaigns_full",
-                    "page": page,
-                    "limit": curr_limit,
-                    "status_filter": status_param,
-                    "ok": False,
-                    "error": f"{type(e).__name__}: {e}",
-                    "attempt": attempt,
-                })
+                _log_jsonl(
+                    "campaigns_full.jsonl",
+                    {
+                        "endpoint": "campaigns_full",
+                        "page": page,
+                        "limit": curr_limit,
+                        "status_filter": status_param,
+                        "ok": False,
+                        "error": f"{type(e).__name__}: {e}",
+                        "attempt": attempt,
+                    },
+                )
                 await asyncio.sleep(1.2 * attempt)
                 curr_limit = max(20, curr_limit // 2)
         return []
 
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, http2=True) as client:
+    async with httpx.AsyncClient(
+        timeout=timeout, follow_redirects=True, http2=True
+    ) as client:
         page = 1
         while page <= max_pages:
             end = min(max_pages, page + int(window_pages) - 1)
@@ -147,8 +230,11 @@ async def fetch_campaigns_full_all(
 
     return out
 
+
 # --- Lấy sản phẩm từ datafeeds ---
-async def fetch_products(db: Session, path: str, params: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+async def fetch_products(
+    db: Session, path: str, params: Dict[str, Any] | None = None
+) -> List[Dict[str, Any]]:
     cfg = _get_at_config(db)
     if _is_mock_cfg(cfg):
         p = dict(params or {})
@@ -159,20 +245,22 @@ async def fetch_products(db: Session, path: str, params: Dict[str, Any] | None =
         items: list[dict] = []
         for i in range(min(5, limit)):
             idx = i + 1
-            items.append({
-                "id": f"P{page}{idx}",
-                "name": f"SP Tiki {idx}",
-                "url": f"https://tiki.vn/product/{idx}",
-                "aff_link": f"https://go.mock/aff?pid={idx}",
-                "image": "https://via.placeholder.com/300",
-                "price": 99000 + idx,
-                "currency": "VND",
-                "campaign_id": "CAMP3",
-                "merchant": "tikivn",
-                "cate": "cat1",
-                "shop_name": "Shop Mock",
-                "update_time": "2025-09-20T00:00:00Z",
-            })
+            items.append(
+                {
+                    "id": f"P{page}{idx}",
+                    "name": f"SP Tiki {idx}",
+                    "url": f"https://tiki.vn/product/{idx}",
+                    "aff_link": f"https://go.mock/aff?pid={idx}",
+                    "image": "https://via.placeholder.com/300",
+                    "price": 99000 + idx,
+                    "currency": "VND",
+                    "campaign_id": "CAMP3",
+                    "merchant": "tikivn",
+                    "cate": "cat1",
+                    "shop_name": "Shop Mock",
+                    "update_time": "2025-09-20T00:00:00Z",
+                }
+            )
         return items
     url = cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
 
@@ -184,31 +272,32 @@ async def fetch_products(db: Session, path: str, params: Dict[str, Any] | None =
 
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=_headers(cfg.api_key), params=_params)
-        ok = (r.status_code == 200)
+        ok = r.status_code == 200
         try:
             data = r.json() if ok else None
         except Exception:
             data = None
         items = data.get("data") if ok and isinstance(data, dict) else []
         # JSONL log for diagnostics
-        _log_jsonl("datafeeds.jsonl", {
-            "endpoint": "datafeeds" if url.endswith("/v1/datafeeds") else path,
-            "status_code": r.status_code,
-            "ok": ok,
-            "params": _params,
-            "items_count": len(items),
-            "raw_total": (data.get("total") if isinstance(data, dict) else None),
-        })
+        _log_jsonl(
+            "datafeeds.jsonl",
+            {
+                "endpoint": "datafeeds" if url.endswith("/v1/datafeeds") else path,
+                "status_code": r.status_code,
+                "ok": ok,
+                "params": _params,
+                "items_count": len(items),
+                "raw_total": (data.get("total") if isinstance(data, dict) else None),
+            },
+        )
         if not ok:
             r.raise_for_status()
         return items or []
 
+
 # --- Compatibility helper cho main.py: lấy datafeeds theo trang ---
 async def fetch_datafeeds(
-    db: Session,
-    merchant: str,
-    page: int = 1,
-    limit: int = 100
+    db: Session, merchant: str, page: int = 1, limit: int = 100
 ) -> List[Dict[str, Any]]:
     """
     Wrapper tương thích main.py:
@@ -216,11 +305,12 @@ async def fetch_datafeeds(
     - Gọi lại fetch_products('/v1/datafeeds', ...) và map 'merchant' -> 'campaign' theo spec AT
     """
     params: Dict[str, Any] = {
-        "merchant": merchant,   # sẽ được fetch_products đổi thành 'campaign'
+        "merchant": merchant,  # sẽ được fetch_products đổi thành 'campaign'
         "page": str(page),
         "limit": str(limit),
     }
     return await fetch_products(db, "/v1/datafeeds", params)
+
 
 # --- Lấy thông tin khuyến mãi ---
 async def fetch_promotions(db: Session, merchant: str) -> List[Dict[str, Any]]:
@@ -229,32 +319,40 @@ async def fetch_promotions(db: Session, merchant: str) -> List[Dict[str, Any]]:
     """
     cfg = _get_at_config(db)
     if _is_mock_cfg(cfg):
-        return [{
-            "name": f"Promo {merchant.upper()} 15%",
-            "content": "Giảm 15% cho đơn hàng trên 200k",
-            "start_time": "2025-09-01",
-            "end_time": "2025-10-01",
-            "coupon": "SALE15",
-            "link": f"https://{merchant}.vn/promo",
-        }]
+        return [
+            {
+                "name": f"Promo {merchant.upper()} 15%",
+                "content": "Giảm 15% cho đơn hàng trên 200k",
+                "start_time": "2025-09-01",
+                "end_time": "2025-10-01",
+                "coupon": "SALE15",
+                "link": f"https://{merchant}.vn/promo",
+            }
+        ]
     url = cfg.base_url.rstrip("/") + "/v1/offers_informations"
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url, headers=_headers(cfg.api_key), params={"merchant": merchant})
-        ok = (r.status_code == 200)
+        r = await client.get(
+            url, headers=_headers(cfg.api_key), params={"merchant": merchant}
+        )
+        ok = r.status_code == 200
         j = r.json() if ok else None
         items: List[Dict[str, Any]] = []
         if ok and isinstance(j, dict):
             items = j.get("data") or []
 
-        _log_jsonl("promotions.jsonl", {
-            "endpoint": "promotions",
-            "merchant": (merchant or "").lower(),
-            "status_code": r.status_code,
-            "ok": ok,
-            "items_count": len(items),
-            "raw": j,
-        })
+        _log_jsonl(
+            "promotions.jsonl",
+            {
+                "endpoint": "promotions",
+                "merchant": (merchant or "").lower(),
+                "status_code": r.status_code,
+                "ok": ok,
+                "items_count": len(items),
+                "raw": j,
+            },
+        )
         return items
+
 
 # --- Lấy Top products (bán chạy) ---
 async def fetch_top_products(
@@ -263,7 +361,7 @@ async def fetch_top_products(
     date_from: str | None = None,
     date_to: str | None = None,
     page: int = 1,
-    limit: int = 100
+    limit: int = 100,
 ) -> List[Dict[str, Any]]:
     """
     Lấy danh sách sản phẩm bán chạy theo merchant & khoảng ngày.
@@ -273,14 +371,16 @@ async def fetch_top_products(
     if _is_mock_cfg(cfg):
         out: list[dict] = []
         for i in range(3):
-            out.append({
-                "product_id": f"TP{i+1}",
-                "name": f"Top {merchant} #{i+1}",
-                "image": "https://via.placeholder.com/300",
-                "link": f"https://{merchant}.vn/top/{i+1}",
-                "aff_link": f"https://go.mock/top?i={i+1}",
-                "price": 150000 + i * 10000,
-            })
+            out.append(
+                {
+                    "product_id": f"TP{i+1}",
+                    "name": f"Top {merchant} #{i+1}",
+                    "image": "https://via.placeholder.com/300",
+                    "link": f"https://{merchant}.vn/top/{i+1}",
+                    "aff_link": f"https://go.mock/top?i={i+1}",
+                    "price": 150000 + i * 10000,
+                }
+            )
         return out
     url = cfg.base_url.rstrip("/") + "/v1/top_products"
     params = {
@@ -295,21 +395,25 @@ async def fetch_top_products(
 
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=_headers(cfg.api_key), params=params)
-        ok = (r.status_code == 200)
+        ok = r.status_code == 200
         j = r.json() if ok else None
         items: List[Dict[str, Any]] = []
         if ok and isinstance(j, dict):
             items = j.get("data") or []
 
-        _log_jsonl("top_products.jsonl", {
-            "endpoint": "top_products",
-            "merchant": (merchant or "").lower(),
-            "status_code": r.status_code,
-            "ok": ok,
-            "items_count": len(items),
-            "raw": j,
-        })
+        _log_jsonl(
+            "top_products.jsonl",
+            {
+                "endpoint": "top_products",
+                "merchant": (merchant or "").lower(),
+                "status_code": r.status_code,
+                "ok": ok,
+                "items_count": len(items),
+                "raw": j,
+            },
+        )
         return items
+
 
 # --- Lấy danh sách campaign đang chạy ---
 async def fetch_active_campaigns(db: Session) -> Dict[str, str]:
@@ -323,8 +427,10 @@ async def fetch_active_campaigns(db: Session) -> Dict[str, str]:
     url = cfg.base_url.rstrip("/") + "/v1/campaigns"
 
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url, headers=_headers(cfg.api_key), params={"status": "running"})
-        ok = (r.status_code == 200)
+        r = await client.get(
+            url, headers=_headers(cfg.api_key), params={"status": "running"}
+        )
+        ok = r.status_code == 200
         result: Dict[str, str] = {}
         raw = None
 
@@ -332,19 +438,29 @@ async def fetch_active_campaigns(db: Session) -> Dict[str, str]:
             raw = r.json()
             if isinstance(raw, dict):
                 for camp in raw.get("data", []):
-                    camp_id = str(camp.get("campaign_id") or camp.get("id") or "").strip()
-                    merchant = str(camp.get("merchant") or camp.get("name") or "").lower().strip()
+                    camp_id = str(
+                        camp.get("campaign_id") or camp.get("id") or ""
+                    ).strip()
+                    merchant = (
+                        str(camp.get("merchant") or camp.get("name") or "")
+                        .lower()
+                        .strip()
+                    )
                     if camp_id and merchant:
                         result[camp_id] = merchant
 
-        _log_jsonl("campaigns_active.jsonl", {
-            "endpoint": "campaigns_active",
-            "status_code": r.status_code,
-            "ok": ok,
-            "items_count": len(result),
-            "raw": raw if ok else None,
-        })
+        _log_jsonl(
+            "campaigns_active.jsonl",
+            {
+                "endpoint": "campaigns_active",
+                "status_code": r.status_code,
+                "ok": ok,
+                "items_count": len(result),
+                "raw": raw if ok else None,
+            },
+        )
         return result
+
 
 # --- NEW: Lấy chi tiết 1 campaign (kèm trạng thái đăng ký của user nếu API trả về) ---
 async def fetch_campaign_detail(db: Session, campaign_id: str) -> Dict[str, Any] | None:
@@ -373,7 +489,7 @@ async def fetch_campaign_detail(db: Session, campaign_id: str) -> Dict[str, Any]
     params = {"campaign_id": str(campaign_id)}
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.get(url, headers=_headers(cfg.api_key), params=params)
-        ok = (r.status_code == 200)
+        ok = r.status_code == 200
         j = r.json() if ok else None
         detail = None
         if ok and isinstance(j, dict):
@@ -383,35 +499,45 @@ async def fetch_campaign_detail(db: Session, campaign_id: str) -> Dict[str, Any]
             elif isinstance(d, list) and d:
                 detail = d[0]
 
-        _log_jsonl("campaign_detail.jsonl", {
-            "endpoint": "campaign_detail",
-            "campaign_id": str(campaign_id),
-            "status_code": r.status_code,
-            "ok": ok,
-            "empty": (detail is None),
-            "raw": j if ok else None,
-        })
+        _log_jsonl(
+            "campaign_detail.jsonl",
+            {
+                "endpoint": "campaign_detail",
+                "campaign_id": str(campaign_id),
+                "status_code": r.status_code,
+                "ok": ok,
+                "empty": (detail is None),
+                "raw": j if ok else None,
+            },
+        )
         return detail
 
+
 # --- NEW: Lấy commission policies theo campaign_id ---
-async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[str, Any]]:
+async def fetch_commission_policies(
+    db: Session, campaign_id: str
+) -> List[Dict[str, Any]]:
     cfg = _get_at_config(db)
     if _is_mock_cfg(cfg):
-        return [{
-            "reward_type": "CPS",
-            "sales_ratio": 12.5,
-            "sales_price": None,
-            "target_month": "2025-09",
-        }]
+        return [
+            {
+                "reward_type": "CPS",
+                "sales_ratio": 12.5,
+                "sales_price": None,
+                "target_month": "2025-09",
+            }
+        ]
     url = cfg.base_url.rstrip("/") + "/v1/commission_policies"
 
     # Lưu lại toàn bộ attempt để log & debug 404 (tham số gọi, mã lỗi, trích response)
     attempts: list[dict] = []
 
-    async def _call(params: Dict[str, str]) -> tuple[list[dict], int, dict|None, str|None]:
+    async def _call(
+        params: Dict[str, str]
+    ) -> tuple[list[dict], int, dict | None, str | None]:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(url, headers=_headers(cfg.api_key), params=params)
-            ok = (r.status_code == 200)
+            ok = r.status_code == 200
             j = r.json() if ok else None
             items: List[Dict[str, Any]] = []
             if ok and isinstance(j, dict):
@@ -427,13 +553,15 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
                     err_text = (r.text or "")[:512]
                 except Exception:
                     err_text = None
-            attempts.append({
-                "params": params,
-                "status_code": r.status_code,
-                "ok": ok,
-                "items_count": len(items),
-                "error": err_text,
-            })
+            attempts.append(
+                {
+                    "params": params,
+                    "status_code": r.status_code,
+                    "ok": ok,
+                    "items_count": len(items),
+                    "error": err_text,
+                }
+            )
             return items, r.status_code, j, err_text
 
     # Thử kiểu 'campaign_id' trước
@@ -447,8 +575,9 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
         m_slug: str | None = None
         try:
             from crud import get_campaign_by_cid
+
             row = get_campaign_by_cid(db, str(campaign_id))
-            m_slug = (getattr(row, "merchant", None) or None)
+            m_slug = getattr(row, "merchant", None) or None
         except Exception:
             m_slug = None
 
@@ -456,10 +585,11 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
         if not m_slug:
             try:
                 from accesstrade_service import fetch_campaign_detail
+
                 detail = await fetch_campaign_detail(db, str(campaign_id))
                 if isinstance(detail, dict):
                     # ưu tiên field 'campaign' nếu có, sau đó 'merchant'
-                    m_slug = (detail.get("campaign") or detail.get("merchant") or None)
+                    m_slug = detail.get("campaign") or detail.get("merchant") or None
             except Exception:
                 pass
 
@@ -467,33 +597,43 @@ async def fetch_commission_policies(db: Session, campaign_id: str) -> List[Dict[
         for key in ("campaign", "merchant"):
             if items or not m_slug:
                 break
-            items2, status_code2, j2, _ = await _call({key: str(m_slug).strip().lower()})
+            items2, status_code2, j2, _ = await _call(
+                {key: str(m_slug).strip().lower()}
+            )
             if items2:
                 items, status_code, j = items2, status_code2, j2
                 break
 
         # Một số hệ thống yêu cầu cả id và merchant cùng lúc (phòng hờ)
         if not items and m_slug:
-            items2, status_code2, j2, _ = await _call({
-                "campaign_id": str(campaign_id),
-                "merchant": str(m_slug).strip().lower(),
-            })
+            items2, status_code2, j2, _ = await _call(
+                {
+                    "campaign_id": str(campaign_id),
+                    "merchant": str(m_slug).strip().lower(),
+                }
+            )
             if items2:
                 items, status_code, j = items2, status_code2, j2
 
-    _log_jsonl("commission_policies.jsonl", {
-        "endpoint": "commission_policies",
-        "campaign_id": str(campaign_id),
-        "status_code": status_code,
-        "ok": (status_code == 200),
-        "items_count": len(items),
-        "raw": j if status_code == 200 else None,
-        "attempts": attempts,
-    })
+    _log_jsonl(
+        "commission_policies.jsonl",
+        {
+            "endpoint": "commission_policies",
+            "campaign_id": str(campaign_id),
+            "status_code": status_code,
+            "ok": (status_code == 200),
+            "items_count": len(items),
+            "raw": j if status_code == 200 else None,
+            "attempts": attempts,
+        },
+    )
     return items
 
+
 # --- Map sản phẩm ---
-def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promotion: Any = None) -> Dict[str, Any]:
+def map_at_product_to_offer(
+    item: Dict[str, Any], commission: Any = None, promotion: Any = None
+) -> Dict[str, Any]:
     """
     Chuẩn hoá commission & promotion TẠI ĐÂY để export đọc được ngay:
     - commission_norm: dict có các key: sales_ratio, sales_price, reward_type, target_month
@@ -539,7 +679,10 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
 
         # Nếu đã là dict phẳng (đúng keys)
         if isinstance(raw, dict) and (
-            "sales_ratio" in raw or "ratio" in raw or "reward_type" in raw or "sales_price" in raw
+            "sales_ratio" in raw
+            or "ratio" in raw
+            or "reward_type" in raw
+            or "sales_price" in raw
         ):
             return {
                 "sales_ratio": raw.get("sales_ratio") or raw.get("ratio"),
@@ -625,11 +768,14 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
                 }
 
         # Debug: log dữ liệu commission thô để phân tích format thật
-        logger.debug("Commission raw for %s: %s",
-                     it.get("id") or it.get("product_id") or it.get("name"),
-                     raw)
+        logger.debug(
+            "Commission raw for %s: %s",
+            it.get("id") or it.get("product_id") or it.get("name"),
+            raw,
+        )
 
         return None
+
     def _norm_promotion(raw: Any, it: Dict[str, Any]) -> Dict[str, Any] | None:
         """
         Chuẩn hoá promotion:
@@ -658,7 +804,10 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
             it_cate = it.get("cate") or it.get("category") or it.get("category_id")
             # ưu tiên match merchant
             for rec in raw:
-                if isinstance(rec, dict) and (rec.get("merchant") or "").lower() == it_merchant:
+                if (
+                    isinstance(rec, dict)
+                    and (rec.get("merchant") or "").lower() == it_merchant
+                ):
                     # nếu có categories trong promo, thử match với cate sản phẩm
                     cats = rec.get("categories")
                     if not cats or (it_cate and it_cate in cats):
@@ -682,8 +831,12 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
 
     # Chuẩn hoá thêm một số trường thường cần khi export
     extra["desc"] = item.get("desc") or item.get("description")
-    extra["cate"] = item.get("cate") or item.get("category") or item.get("category_name")
-    extra["shop_name"] = item.get("shop_name") or item.get("shop") or item.get("merchant_name")
+    extra["cate"] = (
+        item.get("cate") or item.get("category") or item.get("category_name")
+    )
+    extra["shop_name"] = (
+        item.get("shop_name") or item.get("shop") or item.get("merchant_name")
+    )
     # Lưu thêm 'update_time_raw' để API/Export hiển thị thống nhất
     extra["update_time_raw"] = item.get("update_time") or item.get("last_update")
     # Giữ 'update_time' cho tương thích ngược
@@ -691,7 +844,9 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
 
     return {
         "source": "accesstrade",
-        "source_id": str(item.get("id") or item.get("product_id") or item.get("sku") or ""),
+        "source_id": str(
+            item.get("id") or item.get("product_id") or item.get("sku") or ""
+        ),
         "merchant": merchant,
         "title": item.get("name") or item.get("title") or "No title",
         # Một số payload dùng 'link' thay vì 'url'/'landing_url'/'product_url'
@@ -701,23 +856,37 @@ def map_at_product_to_offer(item: Dict[str, Any], commission: Any = None, promot
             or item.get("product_url")
             or item.get("link")
         ),
-        "affiliate_url": item.get("aff_link") or item.get("affiliate_url") or item.get("deeplink") or None,
+        "affiliate_url": item.get("aff_link")
+        or item.get("affiliate_url")
+        or item.get("deeplink")
+        or None,
         "image_url": item.get("image") or item.get("thumbnail") or None,
         "price": price,
         "currency": item.get("currency") or "VND",
-        "campaign_id": str(item.get("campaign_id") or item.get("campaign_id_str") or ""),
+        "campaign_id": str(
+            item.get("campaign_id") or item.get("campaign_id_str") or ""
+        ),
         # --- V2 flags ---
         "product_id": _extract_product_id(item),
-        "affiliate_link_available": bool(item.get("aff_link") or item.get("affiliate_url") or item.get("deeplink")),
+        "affiliate_link_available": bool(
+            item.get("aff_link") or item.get("affiliate_url") or item.get("deeplink")
+        ),
         "extra": json.dumps(extra, ensure_ascii=False),
     }
+
 
 # --- Kiểm tra link sống/chết ---
 async def _check_url_alive(url: str) -> bool:
     try:
         # Test short-circuit: khi chạy trong môi trường mock hoặc test thì không gọi mạng thật
         import os
-        if os.getenv("AT_MOCK") == "1" or os.getenv("PYTEST_CURRENT_TEST") or os.getenv("TESTING") == "1" or os.getenv("FAST_TEST") == "1":
+
+        if (
+            os.getenv("AT_MOCK") == "1"
+            or os.getenv("PYTEST_CURRENT_TEST")
+            or os.getenv("TESTING") == "1"
+            or os.getenv("FAST_TEST") == "1"
+        ):
             return True
         # UA giống trình duyệt để tránh bị chặn HEAD/GET
         headers = {
@@ -728,7 +897,9 @@ async def _check_url_alive(url: str) -> bool:
             )
         }
         timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True, headers=headers
+        ) as client:
             resp = await client.head(url)
             # Chấp nhận 2xx, 3xx, thậm chí 401/403 (nhiều site chặn bot nhưng link vẫn sống)
             if resp.status_code < 400 or resp.status_code in (401, 403):

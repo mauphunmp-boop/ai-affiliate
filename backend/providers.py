@@ -6,6 +6,7 @@ from typing import Callable, Dict, Any, Awaitable
 # Each function is async and accepts (req, db) and returns Any (dict)
 OpFunc = Callable[[Any, Any], Awaitable[Any]]
 
+
 @dataclass
 class ProviderOps:
     campaigns_sync: OpFunc
@@ -13,6 +14,7 @@ class ProviderOps:
     top_products: OpFunc
     datafeeds_all: OpFunc
     products: OpFunc
+
 
 class ProviderRegistry:
     def __init__(self) -> None:

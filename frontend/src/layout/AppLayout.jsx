@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useLocation } from 'react-router-dom';
-// Consolidated MUI imports (removed duplicated import block that caused identifier redeclarations)
+// Consolidated MUI imports
 import { AppBar, Toolbar, Typography, IconButton, Box, Drawer, List, ListItem, ListItemButton, ListItemText, useMediaQuery, Tooltip, Divider, Select, MenuItem } from '@mui/material';
 import GettingStartedPanel from '../components/GettingStartedPanel.jsx';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -39,7 +39,7 @@ export default function AppLayout() {
   const toggleDrawer = () => setMobileOpen(o=>!o);
   const location = useLocation();
   // Lightweight debug for route changes (dev only)
-  React.useEffect(()=>{ if (import.meta.env.DEV) { /* eslint-disable no-console */ console.debug('[route-change]', location.pathname); } }, [location]);
+  React.useEffect(()=>{ if (import.meta.env.DEV) { console.debug('[route-change]', location.pathname); } }, [location]);
 
   const drawerContent = (
     <Box sx={{ height:'100%', display:'flex', flexDirection:'column' }}>

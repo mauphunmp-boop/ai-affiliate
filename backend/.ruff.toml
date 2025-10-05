@@ -1,0 +1,11 @@
+line-length = 88
+target-version = "py311"
+
+[lint]
+select = ["E", "F"]
+# Ignore long lines and import-at-top to accommodate project style and rich docs; allow E712 style in legacy code.
+ignore = ["E501", "E402", "E712"]
+
+[lint.per-file-ignores]
+"**/tests/**" = ["E401", "E402", "F401", "F841"]
+"**/scripts/**" = ["E401", "E402", "F401", "F841"]

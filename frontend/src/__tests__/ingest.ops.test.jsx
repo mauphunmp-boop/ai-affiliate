@@ -1,9 +1,8 @@
 import React from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import IngestOpsPage from '../pages/Ingest/IngestOpsPage.jsx';
-import * as ingestApi from '../api/ingest.js';
 import { I18nProvider } from '../i18n/I18nProvider.jsx';
 
 // Mock API layer to avoid real HTTP
@@ -34,7 +33,6 @@ describe('IngestOpsPage dynamic forms', () => {
       const logs = window.__TEST__getIngestLogs?.();
       // Debug if failing
       if (!logs || logs.length === 0) {
-        // eslint-disable-next-line no-console
         console.log('DEBUG current logs', logs);
       }
       expect(logs && logs.length > 0).toBeTruthy();

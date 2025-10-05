@@ -15,7 +15,6 @@ const CampaignExtrasDrawerLazy = React.lazy(()=>import('../../components/Campaig
 
 export default function CampaignsDashboard() {
   if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
     console.debug('[CampaignsDashboard] render at', performance.now().toFixed(1));
   }
   const { t } = useT();
@@ -65,13 +64,12 @@ export default function CampaignsDashboard() {
 
   // One-time initial load (summary + alerts + campaigns)
   React.useEffect(()=>{
-    let mounted = true;
     (async()=>{
       try { loadAlerts(); } catch {}
       try { await loadSummary(); } catch {}
       loadCampaigns();
     })();
-    return ()=>{ mounted=false; };
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -114,7 +112,7 @@ export default function CampaignsDashboard() {
     { field:'actions', headerName:'', width:90, renderCell:(_,row)=>(
       <Stack direction="row" spacing={0.5}>
         <Tooltip title={t('campaigns_view_description')}>
-          <IconButton size="small" component="a" href={`/api/campaigns/${encodeURIComponent(row.campaign_id)}/description`} target="_blank" rel="noopener noreferrer" onClick={(e)=>{ /* allow default open in new tab */ }}><OpenInNewIcon fontSize="inherit" /></IconButton>
+          <IconButton size="small" component="a" href={`/api/campaigns/${encodeURIComponent(row.campaign_id)}/description`} target="_blank" rel="noopener noreferrer" onClick={()=>{ /* allow default open in new tab */ }}><OpenInNewIcon fontSize="inherit" /></IconButton>
         </Tooltip>
         <Tooltip title={t('campaigns_view_extras')}>
           <IconButton

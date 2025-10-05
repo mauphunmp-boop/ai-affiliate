@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+    <meta name="theme-color" content="#0b0d10" />
+    <script>
+      // Defensive: ensure no stray service worker (e.g., from admin UI) controls this origin
+      (function(){
+        if ('serviceWorker' in navigator) {
+          try {
+            navigator.serviceWorker.getRegistrations().then(function(regs){ regs.forEach(function(r){ r.unregister(); }); });
+          } catch(e) {}
+          try {
+            if (window.caches && caches.keys) {
+              caches.keys().then(function(keys){ keys.forEach(function(k){ caches.delete(k); }); });
+            }
+          } catch(e) {}
+        }
+      })();
+    </script>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { height: 100%; margin: 0; -webkit-text-size-adjust: 100%; }
+      body { background: #0b0d10; color: #e6edf3; }
+      input, button { font-size: 16px; }
+      button { touch-action: manipulation; }
+    </style>
+    <script>
+      // Adjust CSS var --kb for on-screen keyboard height on iOS/Android
+      (function () {
+        const setKb = () => {
+          const vv = window.visualViewport;
+          if (!vv) return;
+          const kb = Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0));
+          document.documentElement.style.setProperty('--kb', kb + 'px');
+        };
+        window.addEventListener('resize', setKb);
+        window.addEventListener('orientationchange', setKb);
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', setKb);
+          window.visualViewport.addEventListener('scroll', setKb);
+        }
+        setKb();
+      })();
+    </script>
+    <script>
+      // SW kill-switch: replace any previous SW (e.g., from admin UI) with a no-op that purges caches and unregisters
+      (function(){
+        if ('serviceWorker' in navigator) {
+          try {
+            navigator.serviceWorker.register('/sw-kill.js', { scope: '/' }).catch(function(){});
+          } catch(e) {}
+        }
+      })();
+    </script>
+    <title>AI Affiliate — Chat</title>
+    <meta name="description" content="Trợ lý AI gợi ý sản phẩm và link tiếp thị" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

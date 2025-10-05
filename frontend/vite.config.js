@@ -5,9 +5,41 @@ import { visualizer } from 'rollup-plugin-visualizer'
 // https://vite.dev/config/
 export default defineConfig(() => {
   const enableAnalyze = process.env.ANALYZE === '1';
+  // Allowed hostnames for dev server traffic (defensive guard)
+  const allowedHosts = new Set([
+    'admin.tuvanmuasam.app',
+    'localhost',
+    '127.0.0.1',
+  ]);
+
+  // Middleware plugin to hard-block unexpected Host headers
+  const hostGuard = () => ({
+    name: 'host-guard',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        try {
+          const host = (req.headers['host'] || '').toString().split(':')[0];
+          if (!allowedHosts.has(host)) {
+            res.statusCode = 403;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end('Forbidden: host not allowed');
+            return;
+          }
+        } catch (_) {
+          // If parsing fails, be safe and deny
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end('Forbidden');
+          return;
+        }
+        next();
+      });
+    },
+  });
   return {
     plugins: [
       react(),
+      hostGuard(),
       enableAnalyze && visualizer({ filename: 'bundle-report.html', gzipSize: true, brotliSize: true, template: 'treemap', open: false })
     ].filter(Boolean),
     build: {

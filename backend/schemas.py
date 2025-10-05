@@ -3,11 +3,12 @@ from pydantic import ConfigDict
 from datetime import datetime
 from typing import Optional, Dict
 
+
 # ----- Base Schema -----
 class AffiliateLinkBase(BaseModel):
     name: str = Field(min_length=2, max_length=255)  # Tên từ 2–255 ký tự
-    url: HttpUrl                                # URL chính (validate chuẩn)
-    affiliate_url: HttpUrl                      # URL tiếp thị
+    url: HttpUrl  # URL chính (validate chuẩn)
+    affiliate_url: HttpUrl  # URL tiếp thị
 
     # Ép kiểu HttpUrl thành str khi xuất/serialize
     @field_validator("url", "affiliate_url", mode="before")
@@ -38,12 +39,15 @@ class APIConfigBase(BaseModel):
     api_key: str
     model: str | None = None
 
+
 class APIConfigCreate(APIConfigBase):
     pass
+
 
 class APIConfigOut(APIConfigBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
 
 class AffiliateTemplateBase(BaseModel):
     # Platform-first: chỉ cần network + platform (platform có thể None cho default theo network)
@@ -53,12 +57,15 @@ class AffiliateTemplateBase(BaseModel):
     default_params: Optional[Dict[str, str]] = None
     enabled: bool = True
 
+
 class AffiliateTemplateCreate(AffiliateTemplateBase):
     pass
+
 
 class AffiliateTemplateOut(AffiliateTemplateBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- NEW: Shortlink schemas ---
 class ShortlinkOut(BaseModel):
@@ -68,6 +75,7 @@ class ShortlinkOut(BaseModel):
     created_at: datetime | None = None
     last_click_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- THÊM MỚI: schemas cho ProductOffer ---
 class ProductOfferBase(BaseModel):
@@ -80,7 +88,7 @@ class ProductOfferBase(BaseModel):
     image_url: str | None = None
     price: float | None = None
     currency: str | None = "VND"
-    campaign_id: str | None = None   # campaign chứa sản phẩm
+    campaign_id: str | None = None  # campaign chứa sản phẩm
 
     # --- NEW (V2) ---
     approval_status: str | None = None
@@ -91,8 +99,10 @@ class ProductOfferBase(BaseModel):
 
     extra: str | None = None
 
+
 class ProductOfferCreate(ProductOfferBase):
     pass
+
 
 class ProductOfferUpdate(BaseModel):
     # tất cả optional để có thể update từng phần
@@ -116,6 +126,7 @@ class ProductOfferUpdate(BaseModel):
 
     extra: str | None = None
 
+
 class ProductOfferOut(ProductOfferBase):
     id: int
     updated_at: datetime | None = None
@@ -128,6 +139,7 @@ class ProductOfferOut(ProductOfferBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 # --- NEW: schema cho PriceHistory ---
 class PriceHistoryBase(BaseModel):
     offer_id: int
@@ -135,12 +147,15 @@ class PriceHistoryBase(BaseModel):
     currency: str | None = "VND"
     recorded_at: datetime | None = None
 
+
 class PriceHistoryCreate(PriceHistoryBase):
     pass
+
 
 class PriceHistoryOut(PriceHistoryBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- NEW: schema cho Campaign ---
 class CampaignBase(BaseModel):
@@ -153,15 +168,19 @@ class CampaignBase(BaseModel):
     end_time: str | None = None
     user_registration_status: str | None = None
 
+
 class CampaignCreate(CampaignBase):
     pass
+
 
 class CampaignUpdate(CampaignBase):
     pass
 
+
 class CampaignOut(CampaignBase):
     updated_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- NEW: schema cho CommissionPolicy ---
 class CommissionPolicyBase(BaseModel):
@@ -171,11 +190,14 @@ class CommissionPolicyBase(BaseModel):
     sales_price: float | None = None
     target_month: str | None = None
 
+
 class CommissionPolicyCreate(CommissionPolicyBase):
     pass
 
+
 class CommissionPolicyUpdate(CommissionPolicyBase):
     pass
+
 
 class CommissionPolicyOut(CommissionPolicyBase):
     id: int
@@ -193,16 +215,20 @@ class PromotionBase(BaseModel):
     coupon: str | None = None
     link: str | None = None
 
+
 class PromotionCreate(PromotionBase):
     pass
 
+
 class PromotionUpdate(PromotionBase):
     pass
+
 
 class PromotionOut(PromotionBase):
     id: int
     updated_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
+
 
 # --- NEW: Web Vitals schemas ---
 class WebVitalIn(BaseModel):
@@ -217,6 +243,7 @@ class WebVitalIn(BaseModel):
     session_id: str | None = None
     ts: float | None = None  # epoch ms từ client
     extra: dict | None = None
+
 
 class WebVitalOut(WebVitalIn):
     id: int

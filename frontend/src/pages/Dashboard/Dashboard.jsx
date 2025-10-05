@@ -31,7 +31,8 @@ export default function Dashboard() {
 
   const { data: offersCount, loading: loadingOffers, refresh: refreshOffers } = useApiCache('dash_offers_count', () => fetchCount('/offers?limit=50'), { ttlMs: 20000 });
   const { data: campaignsCount, loading: loadingCampaigns, refresh: refreshCampaigns } = useApiCache('dash_campaigns_count', () => fetchCount('/campaigns?limit=50'), { ttlMs: 20000 });
-  const { data: templatesCount, loading: loadingTemplates, refresh: refreshTemplates } = useApiCache('dash_templates_count', () => fetchCount('/affiliate/templates'), { ttlMs: 30000 });
+  // NOTE: Backend endpoint is /aff/templates (frontend route is /affiliate/templates). Use API path here.
+  const { data: templatesCount, loading: loadingTemplates, refresh: refreshTemplates } = useApiCache('dash_templates_count', () => fetchCount('/aff/templates'), { ttlMs: 30000 });
   const { data: linksCount, loading: loadingLinks, refresh: refreshLinks } = useApiCache('dash_links_count', () => fetchCount('/links'), { ttlMs: 30000 });
 
   const anyLoading = loadingOffers || loadingCampaigns || loadingTemplates || loadingLinks;
