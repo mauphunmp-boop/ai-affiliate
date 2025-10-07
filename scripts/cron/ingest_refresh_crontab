@@ -1,0 +1,2 @@
+# Every 30 minutes, randomize start via jitter inside the script
+*/30 * * * * /cron/run_ingest_refresh.sh >> /var/log/cron.log 2>&1

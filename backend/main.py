@@ -416,6 +416,10 @@ if _dist_dir and os.path.isdir(_dist_dir):
 AFF_SECRET = os.getenv(
     "AFF_SECRET", "change-me"
 )  # nhớ đặt trong docker-compose/.env khi chạy thật
+# TTL cho token shortlink (giây). 0 hoặc âm nghĩa là vô hạn (không khuyến nghị cho prod)
+AFF_TOKEN_TTL_SEC = int(os.getenv("AFF_TOKEN_TTL_SEC", "2592000"))  # mặc định 30 ngày
+# Nếu bật, chỉ redirect token đã được persist vào DB (an toàn hơn khi lộ HMAC)
+AFF_REQUIRE_TOKEN_IN_DB = os.getenv("AFF_REQUIRE_TOKEN_IN_DB", "0").strip() in ("1", "true", "TRUE")
 
 # Whitelist domain theo merchant để chống open-redirect
 ALLOWED_DOMAINS = {
@@ -508,6 +512,13 @@ def _parse_token(token: str) -> str:
             raise ValueError("invalid signature")
         pad = "=" * (-len(b64) % 4)
         payload = json.loads(base64.urlsafe_b64decode(b64 + pad).decode())
+        # TTL kiểm tra
+        if AFF_TOKEN_TTL_SEC and AFF_TOKEN_TTL_SEC > 0:
+            ts = int(payload.get("ts") or 0)
+            if ts <= 0:
+                raise ValueError("missing ts")
+            if int(time.time()) - ts > AFF_TOKEN_TTL_SEC:
+                raise ValueError("token expired")
         return payload["u"]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid token: {e}")
@@ -1082,6 +1093,15 @@ def aff_convert(
 )
 def redirect_short_link(token: str, db: Session = Depends(get_db)):
     affiliate_url = _parse_token(token)
+    # Tuỳ chọn: chỉ cho phép token đã persist trong DB (tăng an toàn nếu HMAC bị lộ)
+    if AFF_REQUIRE_TOKEN_IN_DB:
+        try:
+            obj = crud.get_shortlink(db, token)
+        except Exception:
+            # Nếu bảng chưa tồn tại hoặc lỗi DB khác trong môi trường test → coi như không tìm thấy
+            obj = None
+        if not obj:
+            raise HTTPException(status_code=404, detail="Shortlink không tồn tại")
     try:
         crud.increment_shortlink_click(db, token)
     except Exception:
@@ -3792,6 +3812,10 @@ async def scheduler_linkcheck_rotate(
 
     next_cursor = (cursor + 1) % mod
     crud.set_policy_flag(db, "linkcheck_cursor", next_cursor)
+    try:
+        crud.set_policy_flag(db, "linkcheck_last_ts", int(time.time()))
+    except Exception:
+        pass
 
     return {
         "cursor_used": cursor,
@@ -3863,6 +3887,212 @@ def settings_linkcheck_config(
         crud.set_policy_flag(db, "linkcheck_limit", max(1, int(limit_val)))
     flags = crud.get_policy_flags(db)
     return {"ok": True, "flags": flags}
+
+
+# ================================
+# Scheduler: ingest-refresh orchestration (mutexed)
+# ================================
+
+
+class IngestRefreshReq(BaseModel):
+    provider: str = "accesstrade"
+    max_minutes: int = Field(8, ge=1, le=60, description="Thời gian tối đa chạy job (phút)")
+    lock_ttl_sec: int | None = Field(
+        None, description="TTL khoá (giây); mặc định = max_minutes*60 + 60"
+    )
+    throttle_ms: int = 50
+    limit_per_page: int = 100
+    max_pages: int = 3
+    page_concurrency: int = 4
+    include_top_products: bool = False
+    verbose: bool = False
+
+
+@app.get(
+    "/scheduler/ingest/lock/status",
+    tags=["Settings ⚙️"],
+    summary="Trạng thái khoá ingest-refresh",
+)
+def ingest_lock_status(db: Session = Depends(get_db)):
+    return crud.get_ingest_lock_status(db, name="ingest_refresh")
+
+
+@app.post(
+    "/scheduler/ingest/lock/release",
+    tags=["Settings ⚙️"],
+    summary="Tháo khoá ingest-refresh (best-effort)",
+    description=(
+        "Tháo khoá nếu owner trùng hoặc khoá đã hết hạn. Dùng force=true (yêu cầu X-Admin-Key) để buộc giải phóng."
+    ),
+)
+def ingest_lock_release(
+    owner: str | None = Query(None, description="Tên worker/owner"),
+    force: bool = Query(False, description="Buộc tháo khoá (admin)"),
+    db: Session = Depends(get_db),
+    _auth: bool | None = Depends(require_admin_key),
+):
+    # Nếu force=false và không có admin key, dependency require_admin_key sẽ bỏ qua (dev env). Cho phép release theo owner.
+    if force and _auth is not None:
+        ok = crud.release_ingest_lock(db, None, name="ingest_refresh")
+        return {"ok": ok, "force": True}
+    ok = crud.release_ingest_lock(db, owner or None, name="ingest_refresh")
+    return {"ok": ok, "force": False}
+
+
+@app.post(
+    "/scheduler/ingest/refresh",
+    tags=["Settings ⚙️"],
+    summary="Làm mới ingest nhẹ nhàng theo merchants đã duyệt (mutex)",
+    description=(
+        "Chạy lần lượt: đồng bộ campaigns (nhanh), promotions, và datafeeds giới hạn trang, dưới khoá mutex để tránh chồng.")
+)
+async def scheduler_ingest_refresh(
+    body: IngestRefreshReq = Body(
+        default=IngestRefreshReq(),
+        examples={
+            "default": {
+                "summary": "Chạy 8 phút, datafeeds 3 trang/merchant",
+                "value": {
+                    "max_minutes": 8,
+                    "limit_per_page": 100,
+                    "max_pages": 3,
+                    "throttle_ms": 50,
+                    "page_concurrency": 4,
+                    "include_top_products": False,
+                },
+            }
+        },
+    ),
+    request: Request = None,  # type: ignore
+    db: Session = Depends(get_db),
+):
+    import time as _time
+
+    prov = (body.provider or "accesstrade").lower()
+    if prov != "accesstrade":
+        raise HTTPException(status_code=400, detail=f"Provider '{prov}' chưa hỗ trợ")
+
+    # Xác định owner từ header hoặc hostname
+    owner = request.headers.get("X-Worker-Id") if request else None  # type: ignore
+    if not owner:
+        try:
+            owner = os.getenv("HOSTNAME") or os.uname().nodename  # type: ignore
+        except Exception:
+            owner = "api-node"
+
+    ttl = int(body.lock_ttl_sec or (body.max_minutes * 60 + 60))
+    if not crud.acquire_ingest_lock(db, owner=owner, ttl_sec=ttl, name="ingest_refresh"):
+        st = crud.get_ingest_lock_status(db, name="ingest_refresh")
+        raise HTTPException(status_code=423, detail={"message": "Khoá đang bận", "lock": st})
+
+    started = int(_time.time())
+    deadline = started + int(body.max_minutes * 60)
+    results: dict[str, dict | int] = {"_meta": {"owner": owner, "started": started, "deadline": deadline}}
+    try:
+        # Log start
+        try:
+            from accesstrade_service import _log_jsonl as _rawlog
+
+            _rawlog(
+                "ingest_refresh.jsonl",
+                {
+                    "event": "start",
+                    "owner": owner,
+                    "ts": started,
+                    "max_minutes": body.max_minutes,
+                    "limit_per_page": body.limit_per_page,
+                    "max_pages": body.max_pages,
+                    "throttle_ms": body.throttle_ms,
+                    "page_concurrency": body.page_concurrency,
+                    "include_top_products": body.include_top_products,
+                },
+            )
+        except Exception:
+            pass
+        # 1) Campaigns sync (nhanh)
+        req1 = CampaignsSyncReq(
+            statuses=["running", "paused"],
+            only_my=True,
+            enrich_user_status=False,
+            limit_per_page=min(100, body.limit_per_page or 50),
+            page_concurrency=max(1, body.page_concurrency or 4),
+            window_pages=10,
+            throttle_ms=max(0, body.throttle_ms or 0),
+        )
+        res1 = await ingest_v2_campaigns_sync(req1, db)
+        results["campaigns_sync"] = res1  # type: ignore
+        if _time.time() >= deadline:
+            results["_stopped"] = {"reason": "deadline", "at": int(_time.time())}
+            return {"ok": True, **results}
+        # nghỉ ngắn giữa các pha để tránh tải đột ngột
+        await asyncio.sleep(max(0.01, (body.throttle_ms or 0) / 2000.0))
+
+        # 2) Promotions
+        req2 = IngestV2PromotionsReq(merchant=None, verbose=False, throttle_ms=max(0, body.throttle_ms or 0))
+        res2 = await ingest_v2_promotions(req2, db)
+        results["promotions"] = res2  # type: ignore
+        if _time.time() >= deadline:
+            results["_stopped"] = {"reason": "deadline", "at": int(_time.time())}
+            return {"ok": True, **results}
+        await asyncio.sleep(max(0.01, (body.throttle_ms or 0) / 2000.0))
+
+        # 3) Datafeeds (giới hạn trang)
+        req3 = IngestAllDatafeedsReq(
+            params=None,
+            limit_per_page=min(200, body.limit_per_page or 100),
+            max_pages=max(1, body.max_pages or 1),
+            throttle_ms=max(0, body.throttle_ms or 0),
+            check_urls=False,
+            verbose=False,
+        )
+        res3 = await ingest_accesstrade_datafeeds_all(req3, db)
+        results["datafeeds_all"] = res3  # type: ignore
+        if _time.time() >= deadline:
+            results["_stopped"] = {"reason": "deadline", "at": int(_time.time())}
+            return {"ok": True, **results}
+
+        # 4) Top products (tuỳ chọn)
+        if body.include_top_products:
+            req4 = IngestV2TopProductsReq(
+                merchant=None,
+                check_urls=False,
+                verbose=False,
+                limit_per_page=50,
+                max_pages=1,
+                throttle_ms=max(0, body.throttle_ms or 0),
+            )
+            res4 = await ingest_v2_top_products(req4, db)
+            results["top_products"] = res4  # type: ignore
+
+        # Done
+        finished = int(_time.time())
+        results["_meta"].update({"finished": finished, "elapsed_sec": finished - started})  # type: ignore
+        out = {"ok": True, **results}
+        try:
+            from accesstrade_service import _log_jsonl as _rawlog
+
+            _rawlog(
+                "ingest_refresh.jsonl",
+                {
+                    "event": "finish",
+                    "owner": owner,
+                    "ts": finished,
+                    "elapsed": finished - started,
+                    "result": {
+                        k: (v.get("imported") if isinstance(v, dict) else v)
+                        for k, v in results.items()
+                        if k != "_meta"
+                    },
+                },
+            )
+        except Exception:
+            pass
+        return out
+    finally:
+        try:
+            crud.release_ingest_lock(db, owner=owner, name="ingest_refresh")
+        except Exception:
+            pass
 
 
 # --- API test nhanh: check 1 sản phẩm trong DB ---

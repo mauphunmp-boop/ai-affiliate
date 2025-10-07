@@ -15,17 +15,30 @@ tunnel: core-backend
 
 # Ingress rules: order matters. First match wins.
 ingress:
-  # Admin React dev server (adjust port if Vite config changes)
+  # Admin UI (production build served by Nginx in affiliate_ai_frontend)
+  # For development (Vite dev server), switch to http://localhost:5173 instead.
   - hostname: admin.tuvanmuasam.app
-    service: http://localhost:5173
+    service: http://localhost:8081
+    originRequest:
+      httpHostHeader: admin.tuvanmuasam.app
 
   # Backend API (FastAPI / Uvicorn)
   - hostname: api.tuvanmuasam.app
     service: http://localhost:8000
+    originRequest:
+      httpHostHeader: api.tuvanmuasam.app
 
-  # Apex domain serves landing + chat UI (FastAPI until dedicated frontend build)
+  # Apex domain — customer-facing Chat UI (production build served by Nginx in affiliate_ai_customer_ui)
   - hostname: tuvanmuasam.app
-    service: http://localhost:8000
+    service: http://localhost:8080
+    originRequest:
+      httpHostHeader: tuvanmuasam.app
+
+  # Optional: www alias → same Chat UI
+  - hostname: www.tuvanmuasam.app
+    service: http://localhost:8080
+    originRequest:
+      httpHostHeader: www.tuvanmuasam.app
 
   # Catch-all: return 404 for anything else
   - service: http_status:404

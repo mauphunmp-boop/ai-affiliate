@@ -98,5 +98,16 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 Trong pytest, các fixture đã cấu hình sẵn SQLite in-memory + StaticPool, đảm bảo test chạy độc lập.
 
+## Operations
+
+- Disk usage alerts (optional)
+	- Helper script `scripts/disk_check.sh` warns when `/` or `/data` exceed thresholds.
+	- Run manually: `scripts/disk_check.sh 85 90` (defaults to 85% and 90%).
+	- Cron example (every 30 minutes):
+		- Edit crontab: `crontab -e`
+		- Add line:
+			`*/30 * * * * /home/phu/projects/ai-affiliate/scripts/disk_check.sh 85 90 | logger -t ai-affiliate-disk`
+		- Check syslog for entries tagged `ai-affiliate-disk`.
+
 
 

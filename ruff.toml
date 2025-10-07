@@ -1,0 +1,7 @@
+line-length = 100
+select = ["E","F","W","I","UP","B","N","SIM","PL"]
+ignore = []
+
+[format]
+quote-style = "double"
+indent-style = "space"

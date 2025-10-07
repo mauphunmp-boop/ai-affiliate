@@ -1,0 +1,5 @@
+-r backend/requirements.in
+
+# Development-only Python dependencies
+pytest
+pytest-cov

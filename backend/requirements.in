@@ -1,0 +1,15 @@
+fastapi>=0.111
+uvicorn[standard]
+sqlalchemy>=2
+psycopg2-binary
+pydantic>=2
+python-dotenv
+requests
+python-multipart
+httpx[http2]
+openai>=1
+fastapi-utils
+typing-inspect
+pandas
+openpyxl
+XlsxWriter

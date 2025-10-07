@@ -173,6 +173,96 @@ def set_policy_flag(db: Session, key: str, value: str | int | bool) -> None:
     )
 
 
+# ---------------- Ingest-refresh mutex (lightweight, best-effort) ----------------
+def _get_policy_model_raw(db: Session) -> str:
+    from typing import cast
+
+    cfg = get_api_config(db, "ingest_policy")
+    # Cast to str for static type checkers; at runtime this is a plain string value
+    if cfg and getattr(cfg, "model", None) is not None:
+        return cast(str, cfg.model)  # type: ignore[return-value]
+    return ""
+
+
+def _parse_policy_kv(model_str: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for part in model_str.split(";"):
+            if not part:
+                continue
+            if "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            out[k.strip().lower()] = v.strip()
+    except Exception:
+        pass
+    return out
+
+
+def get_ingest_lock_status(db: Session, name: str = "ingest_refresh") -> dict:
+    """Trả trạng thái khoá ingest định kỳ. Dùng lưu trong api_configs.name=ingest_policy (model là chuỗi KV).
+    Keys:
+      - {name}_lock_owner: chuỗi owner (lowercase)
+      - {name}_lock_ts: epoch giây
+      - {name}_lock_ttl: TTL giây
+    """
+    s = _get_policy_model_raw(db).lower()
+    kv = _parse_policy_kv(s)
+    owner = kv.get(f"{name}_lock_owner") or ""
+    try:
+        ts = int(kv.get(f"{name}_lock_ts") or 0)
+    except Exception:
+        ts = 0
+    try:
+        ttl = int(kv.get(f"{name}_lock_ttl") or 0)
+    except Exception:
+        ttl = 0
+    import time as _time
+
+    expired = False
+    if ts and ttl:
+        expired = (_time.time() - ts) > ttl
+    elif ts and not ttl:
+        # Không có TTL → coi như luôn hết hạn để tránh kẹt khoá
+        expired = True
+    else:
+        expired = True
+    return {"owner": owner or None, "ts": ts, "ttl": ttl, "expired": expired}
+
+
+def acquire_ingest_lock(db: Session, owner: str, ttl_sec: int, name: str = "ingest_refresh") -> bool:
+    """Cố gắng chiếm khoá. Nếu đang có khoá và chưa hết hạn, trả False. Nếu hết hạn hoặc trống, đặt khoá mới.
+    Lưu ý: best-effort, không đảm bảo nguyên tử tuyệt đối giữa nhiều tiến trình.
+    """
+    import time as _time
+
+    st = get_ingest_lock_status(db, name)
+    cur_owner = (st.get("owner") or "").strip().lower()
+    me = (owner or "").strip().lower()
+    if cur_owner and (not st.get("expired")) and cur_owner != me:
+        return False
+    # Đặt/ghi đè khoá
+    set_policy_flag(db, f"{name}_lock_owner", me or "")
+    set_policy_flag(db, f"{name}_lock_ts", int(_time.time()))
+    set_policy_flag(db, f"{name}_lock_ttl", max(1, int(ttl_sec or 60)))
+    return True
+
+
+def release_ingest_lock(db: Session, owner: str | None = None, name: str = "ingest_refresh") -> bool:
+    """Tháo khoá. Nếu truyền owner, chỉ cho phép khi trùng hoặc khoá đã hết hạn. Không truyền owner → force (dùng cho admin)."""
+    st = get_ingest_lock_status(db, name)
+    cur_owner = (st.get("owner") or "").strip().lower()
+    if owner is not None:
+        me = (owner or "").strip().lower()
+        if cur_owner and (not st.get("expired")) and cur_owner != me:
+            return False
+    # Reset bằng cách set owner="", ts=0
+    set_policy_flag(db, f"{name}_lock_owner", "")
+    set_policy_flag(db, f"{name}_lock_ts", 0)
+    set_policy_flag(db, f"{name}_lock_ttl", 0)
+    return True
+
+
 def list_api_configs(db: Session) -> List[models.APIConfig]:
     return db.query(models.APIConfig).all()
 

@@ -19,7 +19,18 @@ export default function LogsViewerPage(){
       const r = await api.get('/system/logs');
       if (r.data?.files) {
         setFiles(r.data.files);
-        if (!file && r.data.files.length) setFile(r.data.files[0].filename);
+        if (!file && r.data.files.length) {
+          // preselect via query ?f=filename
+          try {
+            const sp = new URLSearchParams(window.location.search);
+            const f = sp.get('f');
+            if (f && r.data.files.some(x => x.filename === f)) {
+              setFile(f);
+              return;
+            }
+          } catch {}
+          setFile(r.data.files[0].filename);
+        }
       }
     } catch {}
   }, [file]);

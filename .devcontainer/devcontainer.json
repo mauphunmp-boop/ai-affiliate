@@ -1,12 +1,19 @@
 {
   "name": "AI Affiliate Advisor",
+  // Use a concrete base image so features can apply. This removes the VS Code warning about missing image info.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
   "features": {
     "ghcr.io/devcontainers/features/python:1": { "version": "3.11" },
     "ghcr.io/devcontainers/features/node:1": { "version": "20" },
     "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
-  "forwardPorts": [8000, 5173],
-  "postCreateCommand": "pip install -r backend/requirements || true && cd frontend && npm i || true",
+  // Helpful when using Docker-in-Docker
+  "init": true,
+  "runArgs": ["--privileged"],
+  "forwardPorts": [8000, 8080, 8081, 5173],
+  // Prepare Python and Node workspaces
+  "postCreateCommand": "pip install -r backend/requirements.txt -r requirements-dev.txt || true && (cd frontend && npm ci || true) && (cd frontend-customer && npm ci || true)",
+  "remoteUser": "vscode",
   "customizations": {
     "vscode": {
       "extensions": [

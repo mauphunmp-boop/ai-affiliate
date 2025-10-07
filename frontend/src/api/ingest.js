@@ -13,3 +13,12 @@ export const ingestProducts = (payload={}) => api.post('/ingest/products', paylo
 export const ingestCommissions = (payload={}) => api.post('/ingest/commissions', payload);
 
 // Note: Legacy preset TikTok ingest removed per requirements.
+
+// Scheduler: ingest refresh orchestration (mutexed)
+export const getIngestLockStatus = () => api.get('/scheduler/ingest/lock/status');
+export const releaseIngestLock = (owner=null, force=false, adminKey) => {
+	const headers = {};
+	if (adminKey) headers['X-Admin-Key'] = adminKey;
+	return api.post('/scheduler/ingest/lock/release', null, { params: { owner, force }, headers });
+};
+export const runIngestRefresh = (payload={}) => api.post('/scheduler/ingest/refresh', payload);

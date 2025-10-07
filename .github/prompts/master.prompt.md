@@ -49,36 +49,3 @@ description: Prompt tổng hợp tất cả quy tắc và hướng dẫn cho d�
   cd backend && pip install -r requirements.txt
   Kết quả: Cài xong không lỗi, exit code 0.
   ```
-
----
-
-# Checklist test (từ testing-checklist)
-1. Unit test: pytest -q (all green).
-2. Lint & format: black . --check, ruff ., eslint . (pass).
-3. Integration: docker-compose up → /health 200.
-4. Manual:
-   * Tạo 1 product qua API.
-   * Gọi /ai/suggest → kết quả hợp lệ.
-5. Rollback nếu fail: git checkout -- <file> hoặc docker-compose down --rmi local.
-
----
-
-# Code style (từ code-style-guideline)
-- Ưu tiên readability, tách module ≤400 dòng.
-- Docstring cho mỗi function công khai.
-- Không cố giữ API cũ nếu làm code phức tạp.
-- Dùng typing (Python), propTypes/interface (JS).
-- Có test cho logic chính.
-- Commit message dạng: feat/bugfix/<short-descr>.
-- Ví dụ: `feat: add /ingest/v2 full datafeeds (no pagination)`
-
----
-
-# Deploy dev (từ finalize-and-deploy-dev)
-- Quy trình: feature branch → PR → test → merge develop.
-- Nếu agent có CI quyền → build image, push, docker-compose dev up.
-- Nếu không → user chạy 3 lệnh:
-  1. git checkout -b feat/... && git add . && git commit -m "feat: ..." && git push origin feat/...
-  2. docker-compose -f docker-compose.dev.yml up --build -d
-  3. curl -sS http://localhost:8000/health
-- Sau deploy: chạy lại checklist testing-checklist.

@@ -63,3 +63,27 @@ services:
       - "8080:80"
     depends_on:
       - web
+
+  # Lightweight scheduler container running cron to trigger ingest refresh periodically
+  scheduler:
+    image: alpine:3
+    container_name: affiliate_ai_scheduler
+    restart: always
+    depends_on:
+      - web
+    environment:
+      # Use internal service name of backend web
+      API_BASE_URL: http://web:8000
+      # Optional admin key (if set on backend) will be forwarded by the cron script
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      # Default runtime params (can be adjusted via environment without rebuild)
+      MAX_MINUTES: 8
+      LIMIT_PER_PAGE: 100
+      MAX_PAGES: 3
+      THROTTLE_MS: 50
+      PAGE_CONCURRENCY: 4
+      INCLUDE_TOP: "false"
+    volumes:
+      - ./scripts/cron:/cron:ro
+    command: >-
+      sh -c "apk add --no-cache bash curl jq >/dev/null && crontab /cron/ingest_refresh_crontab && crond -f -l 8"

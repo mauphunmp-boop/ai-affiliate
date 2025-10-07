@@ -25,7 +25,7 @@ export default defineConfig(() => {
             res.end('Forbidden: host not allowed');
             return;
           }
-        } catch (_) {
+  } catch {
           // If parsing fails, be safe and deny
           res.statusCode = 403;
           res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -44,6 +44,27 @@ export default defineConfig(() => {
     ].filter(Boolean),
     build: {
       sourcemap: enableAnalyze,
+      chunkSizeWarningLimit: 900,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            // Gom React + MUI + Emotion vào cùng 1 chunk để tránh các vấn đề vòng tham chiếu/TDZ hiếm gặp giữa các chunk riêng biệt
+            if (id.includes('node_modules')) {
+              if (
+                id.includes('react') ||
+                id.includes('scheduler') ||
+                id.includes('@mui') ||
+                id.includes('@emotion')
+              ) {
+                return 'vendor-ui';
+              }
+              if (id.includes('xlsx') || id.includes('xlsx-populate') || id.includes('xlsxwriter')) return 'vendor-xlsx';
+              if (id.includes('lodash') || id.includes('date-fns') || id.includes('dayjs')) return 'vendor-utils';
+              return 'vendor';
+            }
+          },
+        },
+      },
     },
     server: {
       host: '0.0.0.0',          // listen on all interfaces so cloudflared can reach it
