@@ -32,7 +32,7 @@ services:
       - ./frontend:/app
     depends_on:
       - web
-    # Chạy lại npm install để đảm bảo đồng bộ khi volume mount thay thế layer COPY
+    # Cài deps khi mount volume (không audit để nhanh hơn), sau đó chạy dev server
     command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
 
   db:
